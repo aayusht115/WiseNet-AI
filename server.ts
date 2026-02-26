@@ -1,6 +1,7 @@
 import "./env";
 import express from "express";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import cookieParser from "cookie-parser";
@@ -15,12 +16,60 @@ const PORT = Number(process.env.PORT || 3000);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+type SummaryPayload = {
+  title: string;
+  summary: string;
+  keyTakeaways: string[];
+  furtherReading: string[];
+};
+
 function getCookieOptions() {
   return {
     httpOnly: true,
     secure: isProduction,
     sameSite: (isProduction ? "none" : "lax") as "none" | "lax",
   };
+}
+
+function summarizeWithPegasus(title: string, content: string): Promise<SummaryPayload> {
+  return new Promise((resolve, reject) => {
+    const pythonBin = process.env.PYTHON_BIN || "python3";
+    const scriptPath = path.resolve(__dirname, "python", "pegasus_summarizer.py");
+    const child = spawn(pythonBin, [scriptPath], {
+      env: process.env,
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => reject(error));
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        return reject(
+          new Error(stderr.trim() || `Pegasus process exited with status ${code}`)
+        );
+      }
+      try {
+        const parsed = JSON.parse(stdout);
+        if (parsed.error) {
+          return reject(new Error(parsed.error));
+        }
+        resolve(parsed as SummaryPayload);
+      } catch {
+        reject(new Error("Failed to parse Pegasus output"));
+      }
+    });
+
+    child.stdin.write(JSON.stringify({ title, content }));
+    child.stdin.end();
+  });
 }
 
 async function startServer() {
@@ -72,6 +121,20 @@ async function startServer() {
       res.json(decoded);
     } catch {
       res.status(401).json({ error: "Invalid token" });
+    }
+  });
+
+  app.post("/api/ai/summarize", authenticate, async (req, res) => {
+    try {
+      const title = String(req.body?.title || "Untitled Reading");
+      const content = String(req.body?.content || "");
+      if (!content.trim()) {
+        return res.status(400).json({ error: "Content is required" });
+      }
+      const result = await summarizeWithPegasus(title, content);
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to summarize content" });
     }
   });
 

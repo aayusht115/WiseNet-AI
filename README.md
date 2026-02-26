@@ -1,6 +1,7 @@
 # WiseNet AI
 
 Express + Vite app with a Supabase-hosted Postgres database.
+Summarization now runs locally with `google/pegasus-xsum` (Python), not Gemini.
 
 ## Prerequisites
 
@@ -13,6 +14,12 @@ Express + Vite app with a Supabase-hosted Postgres database.
 npm install
 ```
 
+Install Python dependencies for Pegasus:
+
+```bash
+python3 -m pip install -r python/requirements.txt
+```
+
 ## 2. Create environment file
 
 ```bash
@@ -21,11 +28,12 @@ cp .env.example .env.local
 
 Set values in `.env.local`:
 
-- `GEMINI_API_KEY`
+- `GEMINI_API_KEY` (optional, only for non-summarizer AI features still using Gemini)
 - `DATABASE_URL` (Supabase Postgres connection string, pooler URL recommended)
 - `JWT_SECRET`
 - `PORT` (default `3000`)
 - `PGSSLMODE` (`require` for Supabase)
+- `PYTHON_BIN` (`python3` by default)
 
 ## 3. Initialize Supabase DB
 

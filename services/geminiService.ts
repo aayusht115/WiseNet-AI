@@ -106,32 +106,14 @@ export const geminiService = {
   },
 
   async summarizeContent(title: string, content: string): Promise<SummaryResult> {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: `Provide a comprehensive summary of the following material titled "${title}":\n\n${content}\n\nInclude: 1. A short abstract. 2. A list of 5 key takeaways. 3. 3 suggestions for further reading. Return as JSON.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            summary: { type: Type.STRING },
-            keyTakeaways: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            },
-            furtherReading: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            }
-          },
-          required: ["title", "summary", "keyTakeaways", "furtherReading"]
-        }
-      }
-    });
-
     try {
-      return JSON.parse(response.text || '{}');
+      const response = await fetch('/api/ai/summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, content }),
+      });
+      if (!response.ok) throw new Error('Summarization failed');
+      return await response.json();
     } catch (e) {
       console.error("Failed to parse summary", e);
       return { title, summary: '', keyTakeaways: [], furtherReading: [] };
