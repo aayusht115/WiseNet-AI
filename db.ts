@@ -120,12 +120,12 @@ const seed = () => {
 
     // Courses
     const courses = [
-      { name: 'Business Communication - I', code: 'OLS513-PBM', cat: cat3, instructor: 'Prof. Rajiv Agarwal', credits: 1 },
-      { name: 'Business Policy & Strategy - I', code: 'STR501-PBM', cat: cat3, instructor: 'Prof. Rajiv Agarwal, Prof. Malay Krishna', credits: 1 },
-      { name: 'Decision Analysis Simulation', code: 'STR503-PBM', cat: cat3, instructor: 'Prof. X', credits: 1 },
+      { name: 'Business Communication - I', code: 'OLS513-PBM', cat: cat3, instructor: 'Dr. Reed', credits: 1 },
+      { name: 'Business Policy & Strategy - I', code: 'STR501-PBM', cat: cat3, instructor: 'Dr. Reed', credits: 1 },
+      { name: 'Decision Analysis Simulation', code: 'STR503-PBM', cat: cat3, instructor: 'Prof. Rajiv Agarwal', credits: 1 },
       { name: 'Financial Accounting and Statement Analysis', code: 'ACC505-PBM', cat: cat3, instructor: 'Prof. Y', credits: 1 },
       { name: 'Managerial Economics - I', code: 'ECO502-PBM', cat: cat3, instructor: 'Prof. Z', credits: 1 },
-      { name: 'Corporate Finance', code: 'FIN501', cat: cat3, instructor: 'Dr. Emily Watson', credits: 1 },
+      { name: 'Corporate Finance', code: 'FIN501', cat: cat3, instructor: 'Dr. Reed', credits: 1 },
       { name: 'Business in Digital Age', code: 'DIG501', cat: cat3, instructor: 'Prof. Michael Chen', credits: 1 },
     ];
 

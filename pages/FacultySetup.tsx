@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Plus, MoreHorizontal, ChevronDown } from 'lucide-react';
+import { Plus, MoreHorizontal, ChevronDown, Loader2 } from 'lucide-react';
 import { Course, NavigationTab } from '../types';
 
 interface FacultySetupProps {
@@ -11,6 +11,7 @@ interface FacultySetupProps {
 const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse }) => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectingId, setSelectingId] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchCourses = async () => {
@@ -28,6 +29,11 @@ const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse
     };
     fetchCourses();
   }, []);
+
+  const handleSelect = (id: number) => {
+    setSelectingId(id);
+    onSelectCourse(id);
+  };
 
   return (
     <div className="animate-in fade-in duration-500">
@@ -69,9 +75,14 @@ const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse
               {courses.map(course => (
                 <div 
                   key={course.id}
-                  onClick={() => onSelectCourse(course.id)}
-                  className="moodle-card group cursor-pointer hover:shadow-md transition-all overflow-hidden"
+                  onClick={() => handleSelect(course.id)}
+                  className={`moodle-card group cursor-pointer hover:shadow-md transition-all overflow-hidden relative ${selectingId === course.id ? 'opacity-70 pointer-events-none' : ''}`}
                 >
+                  {selectingId === course.id && (
+                    <div className="absolute inset-0 bg-white/40 backdrop-blur-[1px] flex items-center justify-center z-10">
+                      <Loader2 size={32} className="text-moodle-blue animate-spin" />
+                    </div>
+                  )}
                   <div className="h-32 bg-slate-100 relative">
                     {course.image_url ? (
                       <img src={course.image_url} alt={course.name} className="w-full h-full object-cover" />

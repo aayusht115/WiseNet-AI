@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { ChevronDown, HelpCircle, AlertCircle, Upload, X } from 'lucide-react';
+import { ChevronDown, HelpCircle, AlertCircle, Upload, X, Loader2 } from 'lucide-react';
 import { Course } from '../types';
 
 interface FacultyCourseEditorProps {
@@ -8,6 +8,38 @@ interface FacultyCourseEditorProps {
   onSave: () => void;
   onCancel: () => void;
 }
+
+const FormSection = ({ title, children, isOpen = true }: { title: string, children: React.ReactNode, isOpen?: boolean }) => {
+  const [open, setOpen] = useState(isOpen);
+  return (
+    <div className="border-b border-slate-200">
+      <button 
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center p-4 hover:bg-slate-50 transition-all duration-200"
+      >
+        <div className={`p-1 bg-blue-50 rounded mr-3 transition-transform duration-200 ${open ? 'rotate-0' : '-rotate-90'}`}>
+          <ChevronDown size={16} className="text-moodle-blue" />
+        </div>
+        <h3 className="text-xl font-medium text-slate-800">{title}</h3>
+      </button>
+      {open && <div className="p-6 pt-0 space-y-6 animate-in fade-in slide-in-from-top-2 duration-200">{children}</div>}
+    </div>
+  );
+};
+
+const FormField = ({ label, required, children, help }: { label: string, required?: boolean, children: React.ReactNode, help?: string }) => (
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+    <div className="flex items-center space-x-2 pt-2">
+      <label className="text-sm font-medium text-slate-700">{label}</label>
+      {required && <AlertCircle size={14} className="text-red-500 fill-red-500" />}
+      {help && <HelpCircle size={14} className="text-moodle-blue cursor-help" />}
+    </div>
+    <div className="md:col-span-2">
+      {children}
+    </div>
+  </div>
+);
 
 const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onSave, onCancel }) => {
   const [formData, setFormData] = useState<Partial<Course>>({
@@ -53,38 +85,6 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
       setLoading(false);
     }
   };
-
-  const FormSection = ({ title, children, isOpen = true }: { title: string, children: React.ReactNode, isOpen?: boolean }) => {
-    const [open, setOpen] = useState(isOpen);
-    return (
-      <div className="border-b border-slate-200">
-        <button 
-          type="button"
-          onClick={() => setOpen(!open)}
-          className="w-full flex items-center p-4 hover:bg-slate-50 transition-colors"
-        >
-          <div className={`p-1 bg-blue-50 rounded mr-3 transition-transform ${open ? 'rotate-0' : '-rotate-90'}`}>
-            <ChevronDown size={16} className="text-moodle-blue" />
-          </div>
-          <h3 className="text-xl font-medium text-slate-800">{title}</h3>
-        </button>
-        {open && <div className="p-6 pt-0 space-y-6">{children}</div>}
-      </div>
-    );
-  };
-
-  const FormField = ({ label, required, children, help }: { label: string, required?: boolean, children: React.ReactNode, help?: string }) => (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
-      <div className="flex items-center space-x-2 pt-2">
-        <label className="text-sm font-medium text-slate-700">{label}</label>
-        {required && <AlertCircle size={14} className="text-red-500 fill-red-500" />}
-        {help && <HelpCircle size={14} className="text-moodle-blue cursor-help" />}
-      </div>
-      <div className="md:col-span-2">
-        {children}
-      </div>
-    </div>
-  );
 
   return (
     <div className="animate-in slide-in-from-bottom-4 duration-500">
@@ -232,20 +232,23 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
           <button 
             type="submit"
             disabled={loading}
-            className="px-4 py-2 bg-moodle-blue text-white rounded font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+            className="px-6 py-2.5 bg-moodle-blue text-white rounded font-bold hover:bg-blue-700 transition-all disabled:opacity-70 flex items-center space-x-2 shadow-sm"
           >
-            {loading ? 'Saving...' : 'Save and return'}
+            {loading && <Loader2 size={18} className="animate-spin" />}
+            <span>{loading ? 'Saving...' : 'Save and return'}</span>
           </button>
           <button 
             type="button"
-            className="px-4 py-2 bg-moodle-blue text-white rounded font-medium hover:bg-blue-700 transition-colors"
+            disabled={loading}
+            className="px-6 py-2.5 bg-slate-800 text-white rounded font-bold hover:bg-slate-700 transition-all disabled:opacity-70 flex items-center space-x-2 shadow-sm"
           >
-            Save and display
+            <span>Save and display</span>
           </button>
           <button 
             type="button"
             onClick={onCancel}
-            className="px-4 py-2 bg-slate-200 text-slate-800 rounded font-medium hover:bg-slate-300 transition-colors"
+            disabled={loading}
+            className="px-6 py-2.5 bg-slate-200 text-slate-800 rounded font-bold hover:bg-slate-300 transition-all disabled:opacity-70"
           >
             Cancel
           </button>

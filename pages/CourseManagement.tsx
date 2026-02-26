@@ -14,7 +14,8 @@ import {
   MessageSquare,
   File,
   HelpCircle,
-  X
+  X,
+  Loader2
 } from 'lucide-react';
 import { Course, CourseSection, CourseActivity } from '../types';
 
@@ -30,6 +31,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, onBack })
   const [participants, setParticipants] = useState<any[]>([]);
   const [allStudents, setAllStudents] = useState<any[]>([]);
   const [showEnrolModal, setShowEnrolModal] = useState(false);
+  const [enrollingId, setEnrollingId] = useState<number | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [activeTab, setActiveTab] = useState<'course' | 'settings' | 'participants' | 'reports'>('course');
   const [loading, setLoading] = useState(true);
@@ -65,13 +67,18 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, onBack })
   }, [courseId]);
 
   const handleEnrol = async (userId: number) => {
-    const response = await fetch(`/api/courses/${courseId}/enrol`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId })
-    });
-    if (response.ok) {
-      fetchParticipants();
+    setEnrollingId(userId);
+    try {
+      const response = await fetch(`/api/courses/${courseId}/enrol`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId })
+      });
+      if (response.ok) {
+        await fetchParticipants();
+      }
+    } finally {
+      setEnrollingId(null);
     }
   };
 
@@ -185,9 +192,11 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, onBack })
                   </div>
                   <button 
                     onClick={() => handleEnrol(student.id)}
-                    className="px-3 py-1 bg-moodle-blue text-white rounded text-xs font-bold hover:bg-blue-700 transition-colors"
+                    disabled={enrollingId === student.id}
+                    className="px-3 py-1 bg-moodle-blue text-white rounded text-xs font-bold hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center space-x-1"
                   >
-                    Enrol
+                    {enrollingId === student.id && <Loader2 size={12} className="animate-spin" />}
+                    <span>{enrollingId === student.id ? 'Enrolling...' : 'Enrol'}</span>
                   </button>
                 </div>
               ))}
