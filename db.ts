@@ -158,7 +158,7 @@ const seed = () => {
 
     // Enrollments
     const enroll = db.prepare('INSERT INTO enrollments (user_id, course_id, progress, last_accessed) VALUES (?, ?, ?, ?)');
-    const allUserIds = db.prepare('SELECT id FROM users WHERE role = "student"').all() as { id: number }[];
+    const allUserIds = db.prepare("SELECT id FROM users WHERE role = 'student'").all() as { id: number }[];
     
     allUserIds.forEach((user, uIdx) => {
       courseIds.forEach((id, cIdx) => {
