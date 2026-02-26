@@ -1,199 +1,331 @@
-
-import React, { useState, useEffect } from 'react';
-import { 
-  Users, 
-  Target, 
-  Flame, 
-  AlertTriangle, 
-  TrendingUp, 
-  MousePointer2,
-  Bell,
-  CheckCircle,
-  Clock
-} from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from 'recharts';
-
-const QUIZ_SCORES = [
-  { range: '0-20%', count: 5 },
-  { range: '21-40%', count: 12 },
-  { range: '41-60%', count: 45 },
-  { range: '61-80%', count: 88 },
-  { range: '81-100%', count: 32 },
-];
-
-const COMPLETION_DATA = [
-  { name: 'Opened', val: 182 },
-  { name: 'Summary View', val: 156 },
-  { name: 'Full Read', val: 98 },
-  { name: 'Quiz Started', val: 92 },
-  { name: 'Quiz Finished', val: 88 },
-];
-
-const HEATMAP_CONCEPTS = [
-  { name: 'RAFT Protocol', difficulty: 85, confidence: 32, students: 45 },
-  { name: 'CAP Theorem', difficulty: 45, confidence: 78, students: 82 },
-  { name: 'Byzantine Fault', difficulty: 92, confidence: 15, students: 30 },
-  { name: 'Network Partition', difficulty: 60, confidence: 55, students: 76 },
-];
+import React, { useEffect, useMemo, useState } from "react";
+import { Loader2, PlusCircle, Trophy, Users, BarChart3, MessageSquareText } from "lucide-react";
+import ScheduleBoard from "../components/ScheduleBoard";
+import { Course, CourseSession } from "../types";
 
 const FacultyAnalytics: React.FC = () => {
-  const [risks, setRisks] = useState<any[]>([]);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [quizReports, setQuizReports] = useState<any[]>([]);
+  const [quizAnalytics, setQuizAnalytics] = useState<any | null>(null);
+  const [preReadAnalytics, setPreReadAnalytics] = useState<any | null>(null);
+  const [feedbackAnalytics, setFeedbackAnalytics] = useState<any | null>(null);
+  const [sessions, setSessions] = useState<CourseSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [addingSession, setAddingSession] = useState(false);
+  const [error, setError] = useState("");
+
+  const [sessionForm, setSessionForm] = useState({
+    title: "",
+    session_date: "",
+    start_time: "09:00",
+    end_time: "10:30",
+    mode: "classroom",
+  });
+
+  const selectedCourse = useMemo(
+    () => courses.find((course) => course.id === selectedCourseId) || null,
+    [courses, selectedCourseId]
+  );
+
+  const fetchCourseAnalytics = async (courseId: number) => {
+    const [reportsRes, quizAnalyticsRes, sessionsRes, feedbackRes, preReadRes] = await Promise.all([
+      fetch(`/api/courses/${courseId}/quiz-reports`),
+      fetch(`/api/courses/${courseId}/quiz-analytics`),
+      fetch(`/api/courses/${courseId}/sessions`),
+      fetch(`/api/courses/${courseId}/feedback/analytics`),
+      fetch(`/api/courses/${courseId}/pre-read-analytics`),
+    ]);
+
+    if (!reportsRes.ok || !quizAnalyticsRes.ok || !sessionsRes.ok || !feedbackRes.ok || !preReadRes.ok) {
+      throw new Error("Failed to load analytics.");
+    }
+
+    setQuizReports(await reportsRes.json());
+    setQuizAnalytics(await quizAnalyticsRes.json());
+    setSessions(await sessionsRes.json());
+    setFeedbackAnalytics(await feedbackRes.json());
+    setPreReadAnalytics(await preReadRes.json());
+  };
 
   useEffect(() => {
-    const fetchRisks = async () => {
+    const fetchData = async () => {
+      setError("");
       try {
-        const response = await fetch('/api/analytics/risks');
-        if (response.ok) {
-          setRisks(await response.json());
+        const coursesRes = await fetch("/api/courses");
+        if (!coursesRes.ok) {
+          setError("Could not load your courses.");
+          return;
+        }
+        const data = (await coursesRes.json()) as Course[];
+        setCourses(data);
+        if (data[0]?.id) {
+          setSelectedCourseId(data[0].id);
+          await fetchCourseAnalytics(data[0].id);
         }
       } catch (err) {
-        console.error("Failed to fetch risks", err);
+        console.error("Failed to fetch faculty analytics data", err);
+        setError("Could not load analytics data.");
       } finally {
         setLoading(false);
       }
     };
-    fetchRisks();
+    fetchData();
   }, []);
+
+  const onSelectCourse = async (courseId: number) => {
+    setSelectedCourseId(courseId);
+    setLoading(true);
+    setError("");
+    try {
+      await fetchCourseAnalytics(courseId);
+    } catch {
+      setError("Could not load analytics for this course.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addSession = async () => {
+    if (!selectedCourseId || !sessionForm.title || !sessionForm.session_date) return;
+    setAddingSession(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/courses/${selectedCourseId}/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sessionForm),
+      });
+      if (response.ok) {
+        setSessionForm({
+          title: "",
+          session_date: "",
+          start_time: "09:00",
+          end_time: "10:30",
+          mode: "classroom",
+        });
+        await fetchCourseAnalytics(selectedCourseId);
+      } else {
+        const payload = await response.json().catch(() => ({ error: "Failed to add session." }));
+        setError(payload.error || "Failed to add session.");
+      }
+    } catch {
+      setError("Failed to add session.");
+    } finally {
+      setAddingSession(false);
+    }
+  };
+
+  const latestFeedbackForm = feedbackAnalytics?.forms?.[0];
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-800">Class Readiness Insights</h2>
-          <p className="text-slate-500 text-sm mt-1">Distributed Systems CS401 • Section A</p>
+          <h2 className="text-2xl font-bold text-slate-800">Faculty Analytics and Class Health</h2>
+          <p className="text-slate-500 text-sm mt-1">
+            Track quiz performance, session schedule, and anonymous feedback insights.
+          </p>
         </div>
-        <div className="flex space-x-3">
-          <button className="px-4 py-2 bg-white border border-slate-300 rounded text-sm font-bold hover:bg-slate-50 transition-colors">
-            Export Dataset
-          </button>
-          <button className="moodle-btn-primary px-4 py-2 rounded text-sm font-bold shadow-sm">
-            Push Nudge to Low Activity
-          </button>
-        </div>
+        <select
+          className="border border-slate-300 rounded px-3 py-2 text-sm"
+          value={selectedCourseId || ""}
+          onChange={(e) => onSelectCourse(Number(e.target.value))}
+        >
+          {courses.map((course) => (
+            <option key={course.id} value={course.id}>
+              {course.name}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {/* Primary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        {[
-          { icon: <CheckCircle className="text-emerald-500" />, label: 'Readiness Meter', value: '72%', color: 'text-emerald-600' },
-          { icon: <Clock className="text-moodle-blue" />, label: 'Avg. Time Spent', value: '38m', color: 'text-moodle-blue' },
-          { icon: <Target className="text-blue-500" />, label: 'Quiz Proficiency', value: 'B+', color: 'text-blue-600' },
-          { icon: <Flame className="text-moodle-orange" />, label: 'Burnout Risk', value: 'Low', color: 'text-emerald-600' },
-        ].map((stat, i) => (
-          <div key={i} className="moodle-card p-6">
-            <div className="w-10 h-10 bg-slate-50 rounded border border-slate-100 flex items-center justify-center mb-4">
-              {stat.icon}
+      {loading ? (
+        <div className="py-16 flex justify-center">
+          <Loader2 size={30} className="animate-spin text-moodle-blue" />
+        </div>
+      ) : error ? (
+        <div className="moodle-card p-5 border border-rose-200 bg-rose-50 text-sm text-rose-700">
+          {error}
+        </div>
+      ) : courses.length === 0 ? (
+        <div className="moodle-card p-6 text-center text-sm text-slate-600">
+          No courses found for your faculty account. Create one from My Courses first.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="moodle-card p-5">
+              <div className="text-xs font-bold uppercase tracking-widest text-slate-400">Quiz Attempts</div>
+              <div className="text-3xl font-black text-slate-800 mt-2">{quizAnalytics?.attempts || 0}</div>
             </div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{stat.label}</p>
-            <h3 className={`text-2xl font-black mt-1 ${stat.color}`}>{stat.value}</h3>
+            <div className="moodle-card p-5">
+              <div className="text-xs font-bold uppercase tracking-widest text-slate-400">Average Score %</div>
+              <div className="text-3xl font-black text-moodle-blue mt-2">{quizAnalytics?.average_percentage || 0}%</div>
+            </div>
+            <div className="moodle-card p-5">
+              <div className="text-xs font-bold uppercase tracking-widest text-slate-400">Highest Score %</div>
+              <div className="text-3xl font-black text-emerald-600 mt-2">{quizAnalytics?.highest_percentage || 0}%</div>
+            </div>
+            <div className="moodle-card p-5">
+              <div className="text-xs font-bold uppercase tracking-widest text-slate-400">Top Performer</div>
+              <div className="text-sm font-bold text-slate-800 mt-2">{quizAnalytics?.top_performer?.name || "--"}</div>
+              <div className="text-xs text-slate-500">{quizAnalytics?.top_performer?.average_percentage || 0}% avg</div>
+            </div>
           </div>
-        ))}
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Completion Funnel */}
-        <div className="lg:col-span-2 moodle-card p-8">
-          <h3 className="text-lg font-bold text-slate-800 mb-8 flex items-center space-x-2">
-            <MousePointer2 size={20} className="text-moodle-blue" />
-            <span>Learning Engagement Funnel</span>
-          </h3>
-          <div className="h-[300px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={COMPLETION_DATA} layout="vertical">
-                <XAxis type="number" hide />
-                <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 700, fill: '#64748b'}} />
-                <Tooltip cursor={{fill: 'transparent'}} contentStyle={{ borderRadius: '4px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }} />
-                <Bar dataKey="val" radius={[0, 2, 2, 0]} barSize={24}>
-                  {COMPLETION_DATA.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={index === COMPLETION_DATA.length - 1 ? '#0070f3' : '#e2e8f0'} />
+          <div className="moodle-card p-6 space-y-4">
+            <h3 className="text-lg font-bold text-slate-800">Add Session (Auto feedback trigger at Session 4)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+              <input
+                placeholder="Session title"
+                className="border border-slate-300 rounded px-3 py-2 text-sm md:col-span-2"
+                value={sessionForm.title}
+                onChange={(e) => setSessionForm((prev) => ({ ...prev, title: e.target.value }))}
+              />
+              <input
+                type="date"
+                className="border border-slate-300 rounded px-3 py-2 text-sm"
+                value={sessionForm.session_date}
+                onChange={(e) => setSessionForm((prev) => ({ ...prev, session_date: e.target.value }))}
+              />
+              <input
+                type="time"
+                className="border border-slate-300 rounded px-3 py-2 text-sm"
+                value={sessionForm.start_time}
+                onChange={(e) => setSessionForm((prev) => ({ ...prev, start_time: e.target.value }))}
+              />
+              <input
+                type="time"
+                className="border border-slate-300 rounded px-3 py-2 text-sm"
+                value={sessionForm.end_time}
+                onChange={(e) => setSessionForm((prev) => ({ ...prev, end_time: e.target.value }))}
+              />
+            </div>
+            <button
+              onClick={addSession}
+              disabled={addingSession}
+              className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black disabled:opacity-70 inline-flex items-center gap-2"
+            >
+              <PlusCircle size={16} /> {addingSession ? "Adding..." : "Add Session"}
+            </button>
+          </div>
+
+          <ScheduleBoard sessions={sessions} title={selectedCourse?.name || "Course"} />
+
+          <div className="moodle-card p-6 overflow-x-auto">
+            <h3 className="text-lg font-bold text-slate-800 mb-4">Pre-read Completion Tracking</h3>
+            <div className="text-xs text-slate-500 mb-3">
+              Students opened: {preReadAnalytics?.summary?.opened_any || 0}/{preReadAnalytics?.summary?.total_students || 0} •
+              Quiz completed: {preReadAnalytics?.summary?.completed_any_quiz || 0}/{preReadAnalytics?.summary?.total_students || 0}
+            </div>
+            {!preReadAnalytics?.students?.length ? (
+              <p className="text-sm text-slate-500 italic">No student progress records yet.</p>
+            ) : (
+              <table className="min-w-full text-sm border border-slate-200">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 border text-left">Student</th>
+                    <th className="px-3 py-2 border text-left">Assigned</th>
+                    <th className="px-3 py-2 border text-left">Opened</th>
+                    <th className="px-3 py-2 border text-left">Read</th>
+                    <th className="px-3 py-2 border text-left">Quiz Completed</th>
+                    <th className="px-3 py-2 border text-left">Avg Quiz %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preReadAnalytics.students.map((student: any) => (
+                    <tr key={student.student_id}>
+                      <td className="px-3 py-2 border">
+                        {student.student_name}
+                        <div className="text-xs text-slate-500">{student.student_email}</div>
+                      </td>
+                      <td className="px-3 py-2 border">{student.assigned_readings}</td>
+                      <td className="px-3 py-2 border">{student.opened_readings}</td>
+                      <td className="px-3 py-2 border">{student.read_readings}</td>
+                      <td className="px-3 py-2 border">{student.quiz_completed_readings}</td>
+                      <td className="px-3 py-2 border">{student.avg_quiz_percent || 0}%</td>
+                    </tr>
                   ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Engagement Risks */}
-        <div className="moodle-card p-6 space-y-6">
-          <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center space-x-2">
-            <AlertTriangle size={20} className="text-red-500" />
-            <span>Engagement Risks</span>
-          </h3>
-          <div className="space-y-4">
-            {loading ? (
-              <div className="flex justify-center py-4"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-moodle-blue"></div></div>
-            ) : risks.length > 0 ? risks.map((risk, i) => (
-              <div key={i} className="flex items-center justify-between p-4 bg-slate-50 rounded border border-slate-200 group">
-                <div>
-                  <h5 className="text-sm font-bold text-slate-800">{risk.name}</h5>
-                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{risk.issue}</p>
-                </div>
-                <button className={`p-2 rounded transition-colors border ${risk.status === 'critical' ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' : 'bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100'}`}>
-                  <Bell size={16} />
-                </button>
-              </div>
-            )) : (
-              <p className="text-sm text-slate-500 italic text-center py-4">No critical risks identified.</p>
+                </tbody>
+              </table>
             )}
           </div>
-          <button className="w-full py-2.5 bg-slate-800 text-white rounded font-bold text-xs hover:bg-slate-700 transition-all shadow-sm">
-            View All 12 Risks
-          </button>
-        </div>
-      </div>
 
-      {/* Heatmap Section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="moodle-card p-8">
-          <h3 className="text-lg font-bold text-slate-800 mb-8 flex items-center space-x-2">
-            <TrendingUp size={20} className="text-emerald-500" />
-            <span>Weak Concept Heatmap</span>
-          </h3>
-          <div className="space-y-4">
-            {HEATMAP_CONCEPTS.map((concept, i) => (
-              <div key={i} className="space-y-2">
-                <div className="flex justify-between items-end">
-                  <span className="text-sm font-bold text-slate-700">{concept.name}</span>
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{concept.confidence}% Confidence</span>
-                </div>
-                <div className="h-2 bg-slate-100 rounded-full overflow-hidden flex">
-                  <div 
-                    className={`h-full transition-all duration-1000 ${concept.confidence < 40 ? 'bg-red-500' : concept.confidence < 70 ? 'bg-moodle-orange' : 'bg-emerald-500'}`}
-                    style={{ width: `${concept.confidence}%` }}
-                  ></div>
-                </div>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Impacts {concept.students} students</p>
+          <div className="moodle-card p-6">
+            <h3 className="text-lg font-bold text-slate-800 mb-4">Reading Quiz Report Feed</h3>
+            {quizReports.length === 0 ? (
+              <p className="text-sm text-slate-500 italic">No quiz attempts have been submitted yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {quizReports.slice(0, 12).map((report) => (
+                  <div key={report.id} className="flex items-center justify-between border border-slate-200 rounded p-3">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{report.student_name}</p>
+                      <p className="text-xs text-slate-500">
+                        {report.material_title} • {report.section_title}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-moodle-blue">
+                        {report.score}/{report.total_questions}
+                      </p>
+                      <p className="text-[10px] text-slate-400 uppercase">
+                        {new Date(report.submitted_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </div>
 
-        <div className="bg-slate-800 rounded p-8 text-white relative overflow-hidden border-l-4 border-moodle-blue shadow-lg">
-           <div className="absolute top-[-20px] right-[-20px] w-40 h-40 bg-moodle-blue/10 rounded-full blur-3xl"></div>
-           <h3 className="text-lg font-bold mb-6 flex items-center space-x-2">
-             <Users size={20} className="text-moodle-blue" />
-             <span>AI Pedagogy Recommendation</span>
-           </h3>
-           <div className="space-y-6">
-             <div className="bg-slate-700/50 backdrop-blur-sm border border-slate-600 p-5 rounded">
-               <p className="text-sm leading-relaxed text-slate-200 italic">
-                 "72% of students identified <span className="font-bold text-moodle-blue">Consensus Mechanisms</span> as their weakest topic. Suggest starting tomorrow's lecture with a live demo of the visual RAFT simulator to bridge the mental model gap."
-               </p>
-             </div>
-             <div className="grid grid-cols-2 gap-4">
-               <div className="bg-slate-700/30 p-4 rounded border border-slate-700">
-                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Top Query</div>
-                 <div className="text-sm font-bold truncate">"What happens during partition?"</div>
-               </div>
-               <div className="bg-slate-700/30 p-4 rounded border border-slate-700">
-                 <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Best Time to Teach</div>
-                 <div className="text-sm font-bold">First 15 mins</div>
-               </div>
-             </div>
-           </div>
-        </div>
-      </div>
+          <div className="moodle-card p-6 space-y-4">
+            <h3 className="text-lg font-bold text-slate-800">Anonymous Feedback Insights</h3>
+            {!latestFeedbackForm ? (
+              <p className="text-sm text-slate-500 italic">
+                No feedback window triggered yet. A form opens after Session 4 and closes in 2 days.
+              </p>
+            ) : (
+              <>
+                <div className="flex items-center gap-4 text-sm text-slate-700">
+                  <span className="inline-flex items-center gap-1"><Users size={14} /> Responses: {latestFeedbackForm.submissions}</span>
+                  <span className="inline-flex items-center gap-1"><BarChart3 size={14} /> Triggered at Session {latestFeedbackForm.trigger_session_number}</span>
+                  <span className="inline-flex items-center gap-1"><Trophy size={14} /> Due: {new Date(latestFeedbackForm.due_at).toLocaleDateString()}</span>
+                </div>
+
+                <div className="space-y-3">
+                  {latestFeedbackForm.metrics
+                    .filter((m: any) => m.question_type === "mcq")
+                    .map((metric: any) => (
+                      <div key={metric.question_id} className="border border-slate-200 rounded p-3">
+                        <div className="text-sm font-semibold text-slate-800">{metric.question_text}</div>
+                        <div className="text-xs text-slate-500 mt-1">Average rating: {metric.average}/5 • Responses: {metric.responses}</div>
+                      </div>
+                    ))}
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-bold text-slate-800 mb-2 inline-flex items-center gap-2">
+                    <MessageSquareText size={14} /> Anonymous Comments
+                  </h4>
+                  <div className="space-y-2">
+                    {latestFeedbackForm.metrics
+                      .filter((m: any) => m.question_type === "text")
+                      .flatMap((m: any) => m.comments || [])
+                      .slice(0, 12)
+                      .map((comment: string, idx: number) => (
+                        <div key={idx} className="text-sm text-slate-700 border border-slate-200 rounded p-2 bg-slate-50">
+                          {comment}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 };

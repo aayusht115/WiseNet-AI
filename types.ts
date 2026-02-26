@@ -5,6 +5,8 @@ export interface Course {
   code: string;
   progress: number;
   instructor: string;
+  created_by?: number;
+  is_enrolled?: boolean;
   nextDeadline?: string;
   category_id?: number;
   description?: string;
@@ -30,6 +32,69 @@ export interface CourseActivity {
   due_date?: string;
   description?: string;
   content?: string;
+}
+
+export interface CourseMaterial {
+  id: number;
+  course_id: number;
+  section_id: number;
+  title: string;
+  source_type: "pdf" | "link";
+  source_url?: string;
+  source_file_name?: string;
+  content: string;
+  summary?: string;
+  key_takeaways?: string[];
+  section_title?: string;
+  quiz_count?: number;
+  latest_score?: number;
+  latest_total?: number;
+  is_assigned?: boolean;
+  assigned_at?: string;
+}
+
+export interface CourseSession {
+  id: number;
+  course_id: number;
+  session_number: number;
+  title: string;
+  session_date: string;
+  start_time?: string;
+  end_time?: string;
+  mode?: string;
+}
+
+export interface FeedbackQuestion {
+  id: number;
+  question_order: number;
+  question_text: string;
+  question_type: "mcq" | "text";
+  options?: string[];
+}
+
+export interface ActiveFeedbackForm {
+  form_id: number;
+  due_at: string;
+  already_submitted: boolean;
+  questions: FeedbackQuestion[];
+}
+
+export interface EvaluationComponent {
+  sr_no: number;
+  component: string;
+  code: string;
+  weightage_percent: number;
+  timeline: string;
+  scheduled_date: string;
+  clos_mapped: string;
+}
+
+export interface CourseDetail {
+  faculty_info?: string;
+  teaching_assistant?: string;
+  credits?: number;
+  learning_outcomes?: string[];
+  evaluation_components?: EvaluationComponent[];
 }
 
 export interface StudyPlanItem {

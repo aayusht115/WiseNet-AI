@@ -5,7 +5,6 @@ import {
   CalendarDays, 
   FileText, 
   BrainCircuit, 
-  BarChart3, 
   Search, 
   Bell, 
   UserCircle,
@@ -73,7 +72,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
   const getBreadcrumbs = () => {
-    const crumbs = [{ label: 'Home', tab: NavigationTab.DASHBOARD }];
+    const crumbs = [
+      {
+        label: 'Home',
+        tab: role === "faculty" ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD,
+      },
+    ];
     
     switch (activeTab) {
       case NavigationTab.DASHBOARD:
@@ -99,7 +103,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
         crumbs.push({ label: 'Add a new course', tab: NavigationTab.COURSE_EDITOR });
         break;
       case NavigationTab.COURSE_MANAGEMENT:
-        crumbs.push({ label: 'Home', tab: NavigationTab.FACULTY_SETUP });
+        crumbs.push({ label: 'Home', tab: role === "faculty" ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD });
         crumbs.push({ label: 'Course Management', tab: NavigationTab.COURSE_MANAGEMENT });
         break;
       case NavigationTab.FACULTY_ANALYTICS:
@@ -122,7 +126,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
             <Menu size={20} />
           </button>
           
-          <div className="flex items-center space-x-2 cursor-pointer" onClick={() => onTabChange(NavigationTab.DASHBOARD)}>
+          <div
+            className="flex items-center space-x-2 cursor-pointer"
+            onClick={() =>
+              onTabChange(role === "faculty" ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD)
+            }
+          >
             <div className="w-8 h-8 bg-moodle-blue rounded flex items-center justify-center text-white">
               <GraduationCap size={20} />
             </div>
@@ -132,19 +141,37 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
           <nav className="hidden md:flex items-center ml-4">
             <NavItem 
               label="Home" 
-              active={activeTab === NavigationTab.DASHBOARD} 
-              onClick={() => onTabChange(NavigationTab.DASHBOARD)} 
+              active={role === "student" ? activeTab === NavigationTab.DASHBOARD : activeTab === NavigationTab.FACULTY_SETUP}
+              onClick={() =>
+                onTabChange(role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_SETUP)
+              }
             />
             <NavItem 
               label="Dashboard" 
-              active={activeTab === NavigationTab.DASHBOARD} 
-              onClick={() => onTabChange(NavigationTab.DASHBOARD)} 
+              active={
+                role === "student"
+                  ? activeTab === NavigationTab.DASHBOARD
+                  : activeTab === NavigationTab.FACULTY_ANALYTICS
+              }
+              onClick={() =>
+                onTabChange(
+                  role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_ANALYTICS
+                )
+              }
             />
-            <NavItem 
-              label="My courses" 
-              active={activeTab === NavigationTab.BOOSTER} 
-              onClick={() => onTabChange(NavigationTab.BOOSTER)} 
-            />
+            {role === "student" ? (
+              <NavItem
+                label="My courses"
+                active={activeTab === NavigationTab.DASHBOARD || activeTab === NavigationTab.COURSE_MANAGEMENT}
+                onClick={() => onTabChange(NavigationTab.DASHBOARD)}
+              />
+            ) : (
+              <NavItem
+                label="My courses"
+                active={activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT}
+                onClick={() => onTabChange(NavigationTab.FACULTY_SETUP)}
+              />
+            )}
           </nav>
         </div>
         
@@ -224,25 +251,9 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                 <SidebarItem 
                   icon={<BookOpen size={18} />} 
                   label="My courses" 
-                  active={activeTab === NavigationTab.BOOSTER}
-                  onClick={() => onTabChange(NavigationTab.BOOSTER)}
+                  active={activeTab === NavigationTab.DASHBOARD || activeTab === NavigationTab.COURSE_MANAGEMENT}
+                  onClick={() => onTabChange(NavigationTab.DASHBOARD)}
                 />
-                
-                <div className="pt-4 pb-2 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider">My courses</div>
-                <div className="space-y-1 px-2">
-                  <button className="w-full flex items-center space-x-2 px-2 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded transition-colors text-left">
-                    <div className="w-2 h-2 bg-moodle-blue rounded-full shrink-0"></div>
-                    <span className="truncate">Business Communication - I</span>
-                  </button>
-                  <button className="w-full flex items-center space-x-2 px-2 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded transition-colors text-left">
-                    <div className="w-2 h-2 bg-moodle-orange rounded-full shrink-0"></div>
-                    <span className="truncate">Business Policy & Strategy - I</span>
-                  </button>
-                  <button className="w-full flex items-center space-x-2 px-2 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded transition-colors text-left">
-                    <div className="w-2 h-2 bg-green-500 rounded-full shrink-0"></div>
-                    <span className="truncate">Decision Analysis Simulation</span>
-                  </button>
-                </div>
 
                 <div className="pt-4 pb-2 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider">AI Enhancements</div>
                 <SidebarItem 
@@ -257,12 +268,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                   active={activeTab === NavigationTab.PLANNER}
                   onClick={() => onTabChange(NavigationTab.PLANNER)}
                 />
-                <SidebarItem 
-                  icon={<BarChart3 size={18} />} 
-                  label="Learning Insights" 
-                  active={activeTab === NavigationTab.REPORTS}
-                  onClick={() => onTabChange(NavigationTab.REPORTS)}
-                />
               </>
             ) : (
               <>
@@ -275,14 +280,14 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                 <SidebarItem 
                   icon={<LayoutDashboard size={18} />} 
                   label="Dashboard" 
-                  active={activeTab === NavigationTab.DASHBOARD}
-                  onClick={() => onTabChange(NavigationTab.DASHBOARD)}
+                  active={activeTab === NavigationTab.FACULTY_ANALYTICS}
+                  onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
                 />
                 <SidebarItem 
                   icon={<BookOpen size={18} />} 
                   label="My courses" 
-                  active={false}
-                  onClick={() => {}}
+                  active={activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT}
+                  onClick={() => onTabChange(NavigationTab.FACULTY_SETUP)}
                 />
                 <SidebarItem 
                   icon={<PieChart size={18} />} 

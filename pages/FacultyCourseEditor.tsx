@@ -6,6 +6,7 @@ import { Course } from '../types';
 interface FacultyCourseEditorProps {
   courseId?: number;
   onSave: () => void;
+  onSaveAndDisplay?: (courseId: number) => void;
   onCancel: () => void;
 }
 
@@ -41,7 +42,12 @@ const FormField = ({ label, required, children, help }: { label: string, require
   </div>
 );
 
-const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onSave, onCancel }) => {
+const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
+  courseId,
+  onSave,
+  onSaveAndDisplay,
+  onCancel,
+}) => {
   const [formData, setFormData] = useState<Partial<Course>>({
     name: '',
     code: '',
@@ -50,24 +56,41 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
     end_date: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString().split('T')[0],
   });
   const [loading, setLoading] = useState(false);
+  const [fetchingCourse, setFetchingCourse] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (courseId) {
       // Fetch course data if editing
       const fetchCourse = async () => {
-        const response = await fetch(`/api/courses/${courseId}`);
-        if (response.ok) {
+        setFetchingCourse(true);
+        setError("");
+        try {
+          const response = await fetch(`/api/courses/${courseId}`);
+          if (!response.ok) {
+            setError("Could not load course details.");
+            return;
+          }
           const data = await response.json();
           setFormData(data);
+        } catch {
+          setError("Could not load course details.");
+        } finally {
+          setFetchingCourse(false);
         }
       };
       fetchCourse();
     }
   }, [courseId]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const submitCourse = async (mode: "return" | "display") => {
+    if (!String(formData.name || "").trim() || !String(formData.code || "").trim()) {
+      setError("Course full name and short name are required.");
+      return;
+    }
+
     setLoading(true);
+    setError("");
     try {
       const url = courseId ? `/api/courses/${courseId}` : '/api/courses';
       const method = courseId ? 'PUT' : 'POST';
@@ -77,13 +100,32 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
         body: JSON.stringify(formData),
       });
       if (response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const savedCourseId = Number(courseId || payload.id || 0);
+        if (!savedCourseId) {
+          setError("Course saved but could not resolve course id.");
+          return;
+        }
+        if (mode === "display" && onSaveAndDisplay) {
+          onSaveAndDisplay(savedCourseId);
+          return;
+        }
         onSave();
+      } else {
+        const payload = await response.json().catch(() => ({ error: "Failed to save course." }));
+        setError(payload.error || "Failed to save course.");
       }
     } catch (err) {
       console.error("Failed to save course", err);
+      setError("Failed to save course.");
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await submitCourse("return");
   };
 
   return (
@@ -118,6 +160,18 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
 
       <h2 className="text-2xl font-bold text-slate-800 mb-8">Add a new course</h2>
 
+      {fetchingCourse ? (
+        <div className="py-10 flex justify-center">
+          <Loader2 size={30} className="animate-spin text-moodle-blue" />
+        </div>
+      ) : null}
+
+      {error ? (
+        <div className="mb-6 rounded border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {error}
+        </div>
+      ) : null}
+
       <form onSubmit={handleSubmit} className="moodle-card overflow-hidden bg-white shadow-sm border border-slate-200 rounded-lg">
         <div className="flex justify-end p-4 border-b border-slate-100">
           <button type="button" className="text-xs text-moodle-blue font-medium hover:underline">Expand all</button>
@@ -130,7 +184,6 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
               value={formData.name}
               onChange={e => setFormData({...formData, name: e.target.value})}
               className="w-full md:w-2/3 border border-slate-300 rounded p-2 text-sm focus:ring-1 focus:ring-moodle-blue outline-none" 
-              required
             />
           </FormField>
           
@@ -140,7 +193,6 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
               value={formData.code}
               onChange={e => setFormData({...formData, code: e.target.value})}
               className="w-full md:w-1/3 border border-slate-300 rounded p-2 text-sm focus:ring-1 focus:ring-moodle-blue outline-none" 
-              required
             />
           </FormField>
 
@@ -239,6 +291,7 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({ courseId, onS
           </button>
           <button 
             type="button"
+            onClick={() => submitCourse("display")}
             disabled={loading}
             className="px-6 py-2.5 bg-slate-800 text-white rounded font-bold hover:bg-slate-700 transition-all disabled:opacity-70 flex items-center space-x-2 shadow-sm"
           >

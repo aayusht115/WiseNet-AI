@@ -11,22 +11,29 @@ interface FacultySetupProps {
 const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse }) => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [selectingId, setSelectingId] = useState<number | null>(null);
 
-  useEffect(() => {
-    const fetchCourses = async () => {
-      try {
-        const response = await fetch('/api/courses');
-        if (response.ok) {
-          const data = await response.json();
-          setCourses(data);
-        }
-      } catch (err) {
-        console.error("Failed to fetch courses", err);
-      } finally {
-        setLoading(false);
+  const fetchCourses = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch('/api/courses');
+      if (!response.ok) {
+        setError("Could not load your courses.");
+        return;
       }
-    };
+      const data = await response.json();
+      setCourses(data);
+    } catch (err) {
+      console.error("Failed to fetch courses", err);
+      setError("Could not load your courses.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchCourses();
   }, []);
 
@@ -57,23 +64,49 @@ const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse
         </div>
 
         <div className="space-y-6">
-          <h2 className="text-2xl font-bold text-slate-800">Available courses</h2>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-2xl font-bold text-slate-800">Available courses</h2>
+            <button
+              onClick={onAddCourse}
+              className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black"
+            >
+              + Add Course
+            </button>
+          </div>
           
-          <button 
-            onClick={onAddCourse}
-            className="px-4 py-2 bg-slate-200 text-slate-800 rounded text-sm font-medium hover:bg-slate-300 transition-colors"
-          >
-            Add a new course
-          </button>
+          <p className="text-sm text-slate-500">
+            Courses are fetched from the database and can be edited from course management.
+          </p>
 
           {loading ? (
             <div className="py-12 flex justify-center">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-moodle-blue"></div>
             </div>
+          ) : error ? (
+            <div className="moodle-card p-6 border border-rose-200 bg-rose-50 text-rose-700 text-sm flex items-center justify-between gap-3">
+              <span>{error}</span>
+              <button
+                onClick={fetchCourses}
+                className="px-3 py-1.5 rounded border border-rose-300 text-xs font-bold hover:bg-rose-100"
+              >
+                Retry
+              </button>
+            </div>
+          ) : courses.length === 0 ? (
+            <div className="moodle-card p-8 text-center space-y-3">
+              <p className="text-sm text-slate-600">No courses created yet.</p>
+              <button
+                onClick={onAddCourse}
+                className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black"
+              >
+                Create Your First Course
+              </button>
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mt-6">
               {courses.map(course => (
-                <div 
+                <button
+                  type="button"
                   key={course.id}
                   onClick={() => handleSelect(course.id)}
                   className={`moodle-card group cursor-pointer hover:shadow-md transition-all overflow-hidden relative ${selectingId === course.id ? 'opacity-70 pointer-events-none' : ''}`}
@@ -101,12 +134,12 @@ const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse
                     </h3>
                     <div className="mt-4 flex items-center justify-between">
                       <span className="text-[10px] font-bold text-slate-500 uppercase">{course.instructor}</span>
-                      <button className="p-1 text-slate-400 hover:text-slate-600">
+                      <span className="p-1 text-slate-400">
                         <MoreHorizontal size={16} />
-                      </button>
+                      </span>
                     </div>
                   </div>
-                </div>
+                </button>
               ))}
             </div>
           )}

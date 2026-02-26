@@ -86,16 +86,12 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
   };
 
   const handleStartQuiz = async () => {
-    setRightView('quiz');
-    setQuizLoading(true);
     try {
-      const questions = await geminiService.generateQuiz(currentItem.content);
-      setQuizQuestions(questions);
+      await fetch(`/api/materials/${session.id}/progress/read`, { method: "POST" });
     } catch (error) {
-      console.error(error);
-    } finally {
-      setQuizLoading(false);
+      console.error("Failed to mark pre-read as read", error);
     }
+    onComplete();
   };
 
   const handleQuizAnswer = (idx: number) => {
@@ -276,7 +272,7 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
             onClick={handleStartQuiz}
             className="moodle-btn-primary px-4 py-1.5 text-sm shadow-sm flex items-center space-x-2"
           >
-            <span>Proceed to Quiz</span>
+            <span>Open 5Q Quiz</span>
             <ChevronRight size={16} />
           </button>
         </div>

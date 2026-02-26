@@ -5,7 +5,6 @@ import Dashboard from './pages/Dashboard';
 import Planner from './pages/Planner';
 import Summarizer from './pages/Summarizer';
 import Reflections from './pages/Reflections';
-import Reports from './pages/Reports';
 import PreReadBooster from './pages/PreReadBooster';
 import LearnMode from './pages/LearnMode';
 import FlashQuiz from './pages/FlashQuiz';
@@ -47,7 +46,7 @@ const App: React.FC = () => {
 
   const handleLogin = (userData: User) => {
     setUser(userData);
-    setActiveTab(userData.role === 'faculty' ? NavigationTab.FACULTY_ANALYTICS : NavigationTab.DASHBOARD);
+    setActiveTab(userData.role === 'faculty' ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD);
   };
 
   const handleLogout = async () => {
@@ -88,7 +87,7 @@ const App: React.FC = () => {
           onFinish={(score, weakTopics) => {
             console.log("Quiz Finished:", score, weakTopics);
             setActiveSession(null);
-            setActiveTab(NavigationTab.REPORTS);
+            setActiveTab(NavigationTab.BOOSTER);
           }} 
         />
       );
@@ -96,7 +95,14 @@ const App: React.FC = () => {
 
     switch (activeTab) {
       case NavigationTab.DASHBOARD:
-        return <Dashboard />;
+        return (
+          <Dashboard
+            onOpenCourse={(id) => {
+              setSelectedCourseId(id);
+              setActiveTab(NavigationTab.COURSE_MANAGEMENT);
+            }}
+          />
+        );
       case NavigationTab.PLANNER:
         return <Planner />;
       case NavigationTab.BOOSTER:
@@ -105,12 +111,13 @@ const App: React.FC = () => {
         return <Summarizer />;
       case NavigationTab.REFLECTIONS:
         return <Reflections />;
-      case NavigationTab.REPORTS:
-        return <Reports />;
       case NavigationTab.FACULTY_SETUP:
         return (
           <FacultySetup 
-            onAddCourse={() => setActiveTab(NavigationTab.COURSE_EDITOR)} 
+            onAddCourse={() => {
+              setSelectedCourseId(null);
+              setActiveTab(NavigationTab.COURSE_EDITOR);
+            }} 
             onSelectCourse={(id) => {
               setSelectedCourseId(id);
               setActiveTab(NavigationTab.COURSE_MANAGEMENT);
@@ -125,6 +132,10 @@ const App: React.FC = () => {
               setSelectedCourseId(null);
               setActiveTab(NavigationTab.FACULTY_SETUP);
             }}
+            onSaveAndDisplay={(id) => {
+              setSelectedCourseId(id);
+              setActiveTab(NavigationTab.COURSE_MANAGEMENT);
+            }}
             onCancel={() => {
               setSelectedCourseId(null);
               setActiveTab(NavigationTab.FACULTY_SETUP);
@@ -135,9 +146,10 @@ const App: React.FC = () => {
         return selectedCourseId ? (
           <CourseManagement 
             courseId={selectedCourseId}
+            role={user.role}
             onBack={() => {
               setSelectedCourseId(null);
-              setActiveTab(NavigationTab.FACULTY_SETUP);
+              setActiveTab(user.role === 'faculty' ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD);
             }}
           />
         ) : <Dashboard />;

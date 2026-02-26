@@ -1,14 +1,28 @@
 #!/usr/bin/env python3
 import json
+import os
 import re
 import sys
-from typing import List
+import warnings
+from typing import List, Optional, Tuple
 
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+
+warnings.filterwarnings("ignore", message=".*NotOpenSSLWarning.*")
+
+try:
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    from transformers.utils import logging as hf_logging
+
+    hf_logging.set_verbosity_error()
+except Exception:
+    AutoModelForSeq2SeqLM = None  # type: ignore
+    AutoTokenizer = None  # type: ignore
 
 MODEL_NAME = "google/pegasus-xsum"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
+_TOKENIZER = None
+_MODEL = None
 
 
 def split_sentences(text: str) -> List[str]:
@@ -16,12 +30,27 @@ def split_sentences(text: str) -> List[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+def fallback_summary(text: str, max_sentences: int = 3, max_chars: int = 700) -> str:
+    sentences = split_sentences(text)
+    if not sentences:
+        return text.strip()[:max_chars]
+    summary = " ".join(sentences[:max_sentences]).strip()
+    return summary[:max_chars]
+
+
+def token_overlap_ratio(a: str, b: str) -> float:
+    tokens_a = {t.lower() for t in re.findall(r"[A-Za-z]{4,}", a)}
+    tokens_b = {t.lower() for t in re.findall(r"[A-Za-z]{4,}", b)}
+    if not tokens_a or not tokens_b:
+        return 0.0
+    return len(tokens_a & tokens_b) / max(1, len(tokens_a))
+
+
 def generate_takeaways(summary: str, content: str) -> List[str]:
     items = split_sentences(summary)
     if len(items) >= 5:
         return items[:5]
 
-    remaining = 5 - len(items)
     extra = split_sentences(content)
     for sentence in extra:
         if len(sentence) < 30:
@@ -46,22 +75,51 @@ def generate_further_reading(title: str) -> List[str]:
     ]
 
 
+def load_model() -> Tuple[Optional[object], Optional[object]]:
+    global _TOKENIZER, _MODEL
+
+    if _TOKENIZER is not None and _MODEL is not None:
+        return _TOKENIZER, _MODEL
+
+    if AutoTokenizer is None or AutoModelForSeq2SeqLM is None:
+        return None, None
+
+    try:
+        _TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME, local_files_only=True)
+        _MODEL = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME, local_files_only=True)
+        return _TOKENIZER, _MODEL
+    except Exception:
+        return None, None
+
+
 def summarize(text: str) -> str:
-    encoded = tokenizer(
-        text,
-        truncation=True,
-        max_length=1024,
-        return_tensors="pt",
-    )
-    summary_ids = model.generate(
-        **encoded,
-        max_new_tokens=96,
-        min_new_tokens=25,
-        num_beams=4,
-        length_penalty=0.8,
-        early_stopping=True,
-    )
-    return tokenizer.decode(summary_ids[0], skip_special_tokens=True).strip()
+    tokenizer, model = load_model()
+    if tokenizer is None or model is None:
+        return fallback_summary(text)
+
+    try:
+        encoded = tokenizer(
+            text,
+            truncation=True,
+            max_length=1024,
+            return_tensors="pt",
+        )
+        summary_ids = model.generate(
+            **encoded,
+            max_new_tokens=96,
+            min_new_tokens=25,
+            num_beams=4,
+            length_penalty=0.8,
+            early_stopping=True,
+        )
+        generated = tokenizer.decode(summary_ids[0], skip_special_tokens=True).strip()
+        if not generated:
+            return fallback_summary(text)
+        if token_overlap_ratio(generated, text) < 0.08:
+            return fallback_summary(text)
+        return generated
+    except Exception:
+        return fallback_summary(text)
 
 
 def main() -> None:
@@ -97,5 +155,14 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(json.dumps({"error": str(exc)}))
-        sys.exit(1)
+        # Never fail hard: keep API response usable even if the model/runtime is unavailable.
+        print(
+            json.dumps(
+                {
+                    "title": "Untitled Reading",
+                    "summary": "",
+                    "keyTakeaways": [f"Summarizer fallback triggered: {exc}"],
+                    "furtherReading": [],
+                }
+            )
+        )

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS courses (
   code TEXT,
   category_id INTEGER REFERENCES categories(id),
   instructor TEXT,
+  created_by INTEGER REFERENCES users(id),
   credits INTEGER,
   description TEXT,
   image_url TEXT,
@@ -25,6 +26,8 @@ CREATE TABLE IF NOT EXISTS courses (
   end_date TIMESTAMPTZ,
   visibility TEXT DEFAULT 'show'
 );
+
+ALTER TABLE courses ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id);
 
 CREATE TABLE IF NOT EXISTS sections (
   id SERIAL PRIMARY KEY,
@@ -58,4 +61,111 @@ CREATE TABLE IF NOT EXISTS submissions (
   user_id INTEGER REFERENCES users(id),
   status TEXT,
   submitted_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS course_details (
+  course_id INTEGER PRIMARY KEY REFERENCES courses(id),
+  faculty_info TEXT,
+  teaching_assistant TEXT,
+  credits INTEGER DEFAULT 2,
+  learning_outcomes JSONB DEFAULT '[]'::jsonb,
+  evaluation_components JSONB DEFAULT '[]'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS course_materials (
+  id SERIAL PRIMARY KEY,
+  course_id INTEGER REFERENCES courses(id),
+  section_id INTEGER REFERENCES sections(id),
+  title TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_url TEXT,
+  source_file_name TEXT,
+  source_file_base64 TEXT,
+  content TEXT NOT NULL,
+  summary TEXT,
+  key_takeaways JSONB DEFAULT '[]'::jsonb,
+  is_assigned BOOLEAN NOT NULL DEFAULT FALSE,
+  assigned_at TIMESTAMPTZ,
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS source_file_name TEXT;
+ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS source_file_base64 TEXT;
+ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS is_assigned BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS material_quiz_questions (
+  id SERIAL PRIMARY KEY,
+  material_id INTEGER REFERENCES course_materials(id),
+  question_order INTEGER NOT NULL,
+  question_text TEXT NOT NULL,
+  options JSONB NOT NULL,
+  correct_answer INTEGER NOT NULL,
+  explanation TEXT
+);
+
+CREATE TABLE IF NOT EXISTS material_quiz_attempts (
+  id SERIAL PRIMARY KEY,
+  material_id INTEGER REFERENCES course_materials(id),
+  user_id INTEGER REFERENCES users(id),
+  answers JSONB NOT NULL,
+  score INTEGER NOT NULL,
+  total_questions INTEGER NOT NULL,
+  submitted_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS course_sessions (
+  id SERIAL PRIMARY KEY,
+  course_id INTEGER REFERENCES courses(id),
+  session_number INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  session_date DATE NOT NULL,
+  start_time TEXT,
+  end_time TEXT,
+  mode TEXT DEFAULT 'classroom',
+  created_by INTEGER REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS feedback_forms (
+  id SERIAL PRIMARY KEY,
+  course_id INTEGER REFERENCES courses(id),
+  trigger_session_number INTEGER NOT NULL,
+  open_at TIMESTAMPTZ NOT NULL,
+  due_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (course_id, trigger_session_number)
+);
+
+CREATE TABLE IF NOT EXISTS feedback_questions (
+  id SERIAL PRIMARY KEY,
+  form_id INTEGER REFERENCES feedback_forms(id) ON DELETE CASCADE,
+  question_order INTEGER NOT NULL,
+  question_text TEXT NOT NULL,
+  question_type TEXT NOT NULL,
+  options JSONB DEFAULT '[]'::jsonb,
+  required BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE IF NOT EXISTS feedback_submissions (
+  id SERIAL PRIMARY KEY,
+  form_id INTEGER REFERENCES feedback_forms(id) ON DELETE CASCADE,
+  course_id INTEGER REFERENCES courses(id),
+  user_id INTEGER REFERENCES users(id),
+  answers JSONB NOT NULL,
+  submitted_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (form_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS material_learning_progress (
+  material_id INTEGER REFERENCES course_materials(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id),
+  opened_at TIMESTAMPTZ,
+  read_completed_at TIMESTAMPTZ,
+  quiz_completed_at TIMESTAMPTZ,
+  quiz_score INTEGER,
+  quiz_total INTEGER,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (material_id, user_id)
 );
