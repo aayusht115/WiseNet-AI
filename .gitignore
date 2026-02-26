@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+wisenet.db
+*.db-journal
 
 # Editor directories and files
 .vscode/*
