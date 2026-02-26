@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@theme {
+  --color-moodle-blue: #0f6cbf;
+  --color-moodle-bg: #f8f9fa;
+  --color-moodle-text: #343a40;
+  --color-moodle-border: #dee2e6;
+  --color-moodle-orange: #f98012;
+}
+
+body {
+  background-color: var(--color-moodle-bg);
+  color: var(--color-moodle-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.moodle-card {
+  background: white;
+  border: 1px solid var(--color-moodle-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+}
+
+.moodle-btn-primary {
+  background-color: var(--color-moodle-blue);
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 0.25rem;
+  font-weight: 700;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.moodle-btn-primary:hover {
+  background-color: #0d5aa0;
+  box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+}
+
+.moodle-input {
+  background-color: white;
+  border: 1px solid #ced4da;
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.moodle-input:focus {
+  border-color: #86b7fe;
+  outline: 0;
+  box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+}
+
+.moodle-badge {
+  display: inline-block;
+  padding: 0.35em 0.65em;
+  font-size: 0.75em;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: baseline;
+  border-radius: 0.25rem;
+}
+
+.moodle-badge-blue { background-color: var(--color-moodle-blue); }
+.moodle-badge-orange { background-color: var(--color-moodle-orange); }

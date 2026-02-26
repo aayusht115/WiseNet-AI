@@ -1,0 +1,108 @@
+
+export interface Course {
+  id: number;
+  name: string;
+  code: string;
+  progress: number;
+  instructor: string;
+  nextDeadline?: string;
+  category_id?: number;
+  description?: string;
+  image_url?: string;
+  start_date?: string;
+  end_date?: string;
+  visibility?: 'show' | 'hide';
+}
+
+export interface CourseSection {
+  id: number;
+  course_id: number;
+  title: string;
+  order: number;
+}
+
+export interface CourseActivity {
+  id: number;
+  section_id: number;
+  course_id: number;
+  title: string;
+  type: string;
+  due_date?: string;
+  description?: string;
+  content?: string;
+}
+
+export interface StudyPlanItem {
+  day: string;
+  topic: string;
+  activities: string[];
+  estimatedTime: string;
+  isWeakTopic?: boolean;
+}
+
+export interface SummaryResult {
+  title: string;
+  summary: string;
+  keyTakeaways: string[];
+  furtherReading: string[];
+  soWhat?: string;
+  keyConcepts?: { title: string; description: string }[];
+}
+
+export interface QuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  correctAnswer: number;
+  explanation: string;
+}
+
+export interface PreReadSession {
+  id: string;
+  title: string;
+  date: string;
+  estimatedTime: string;
+  progress: number;
+  status: 'not_started' | 'in_progress' | 'completed';
+  items: { id: string; title: string; type: 'pdf' | 'video' | 'article'; content: string }[];
+}
+
+export interface ReflectionPrompt {
+  question: string;
+  category: 'Critical Thinking' | 'Application' | 'Synthesis';
+}
+
+export enum NavigationTab {
+  DASHBOARD = 'dashboard',
+  PLANNER = 'planner',
+  BOOSTER = 'booster',
+  LEARN_MODE = 'learn_mode',
+  QUIZ = 'quiz',
+  REPORTS = 'reports',
+  FACULTY_SETUP = 'faculty_setup',
+  FACULTY_ANALYTICS = 'faculty_analytics',
+  COURSE_MANAGEMENT = 'course_management',
+  COURSE_EDITOR = 'course_editor',
+  SUMMARIZER = 'summarizer',
+  REFLECTIONS = 'reflections',
+  LOGIN = 'login'
+}
+
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  role: UserRole;
+}
+
+export interface Activity {
+  id: number;
+  course_id: number;
+  title: string;
+  type: string;
+  due_date: string;
+  course_name: string;
+  course_code: string;
+}
+
+export type UserRole = 'student' | 'faculty';
