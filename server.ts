@@ -425,6 +425,41 @@ function normalizePdfBase64Input(value: any): string | null {
   return Buffer.from(compact, "latin1").toString("base64");
 }
 
+function normalizeExtractedPdfText(value: any): string {
+  return String(value ?? "")
+    .replace(/\u0000/g, " ")
+    .replace(/[^\x20-\x7E\n\r\t]/g, " ")
+    .replace(/\\+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isLikelyReadableExtractedText(value: string): boolean {
+  const text = String(value || "").trim();
+  if (text.length < 280) return false;
+  if (/mozilla\/5\.0|skia\/pdf|%pdf|endstream|obj\s+\d+/i.test(text)) return false;
+
+  const letters = (text.match(/[A-Za-z]/g) || []).length;
+  const digits = (text.match(/[0-9]/g) || []).length;
+  const weird = (text.match(/[^A-Za-z0-9\s.,;:!?'"()\-/%&]/g) || []).length;
+  const repeatedRuns = (text.match(/(.)\1{6,}/g) || []).length;
+  const words = text.split(/\s+/).filter(Boolean);
+  const uniqueWords = new Set(words.map((word) => word.toLowerCase()));
+  const uniqueRatio = words.length > 0 ? uniqueWords.size / words.length : 0;
+
+  const total = Math.max(1, text.length);
+  const letterRatio = letters / total;
+  const digitRatio = digits / total;
+  const weirdRatio = weird / total;
+
+  if (letterRatio < 0.45) return false;
+  if (digitRatio > 0.25) return false;
+  if (weirdRatio > 0.02) return false;
+  if (repeatedRuns > 2) return false;
+  if (uniqueRatio < 0.18) return false;
+  return true;
+}
+
 function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const pythonBin = process.env.PYTHON_BIN || "python3";
@@ -2658,8 +2693,11 @@ async function startServer() {
     );
     if (!section) return res.status(400).json({ error: "Invalid section" });
 
+    const hasManualContent = Boolean(String(content || "").trim());
     let materialContent = String(content || "").trim();
+    let extractedFromPdf = false;
     if (!materialContent && source_type === "pdf" && normalizedPdfBase64) {
+      extractedFromPdf = true;
       try {
         materialContent = await extractPdfTextWithPython(normalizedPdfBase64);
       } catch (error) {
@@ -2668,6 +2706,12 @@ async function startServer() {
       }
     }
     materialContent = stripUnsupportedTextChars(materialContent).trim();
+    if (extractedFromPdf && !hasManualContent) {
+      materialContent = normalizeExtractedPdfText(materialContent);
+      if (!isLikelyReadableExtractedText(materialContent)) {
+        materialContent = "";
+      }
+    }
     if (!materialContent) {
       if (source_type === "link") {
         return res.status(400).json({
@@ -2676,7 +2720,7 @@ async function startServer() {
       }
       return res.status(400).json({
         error:
-          "Could not read text from the PDF. Upload a text-based PDF or provide content text so summary/quiz can be generated.",
+          "Could not extract readable text from this PDF. Upload a text-based PDF, or paste the reading text in the content box for summary and quiz generation.",
       });
     }
 
