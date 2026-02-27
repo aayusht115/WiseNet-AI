@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { BookOpen, Loader2, MessageSquareText } from "lucide-react";
-import { ActiveFeedbackForm, Course, CourseSession } from "../types";
+import { BookOpen, Loader2 } from "lucide-react";
+import { Course, CourseSession } from "../types";
 
 interface DashboardProps {
   onOpenCourse?: (courseId: number) => void;
@@ -17,6 +17,13 @@ type TodoItem = {
   due_at: string;
 };
 
+function formatSessionDate(value: string) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return raw;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString();
+}
+
 const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [availableCourses, setAvailableCourses] = useState<Course[]>([]);
@@ -24,10 +31,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
   const [loading, setLoading] = useState(true);
   const [loadingTodos, setLoadingTodos] = useState(false);
   const [error, setError] = useState<string>("");
-  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
-  const [feedbackForm, setFeedbackForm] = useState<ActiveFeedbackForm | null>(null);
-  const [feedbackAnswers, setFeedbackAnswers] = useState<Record<number, string>>({});
-  const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const [enrollingCourseId, setEnrollingCourseId] = useState<number | null>(null);
   const [completingPreReadId, setCompletingPreReadId] = useState<number | null>(null);
   const [completedPreReadIds, setCompletedPreReadIds] = useState<number[]>([]);
@@ -36,22 +39,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
     const override = localStorage.getItem("wisenet_time_override");
     if (!override) return {};
     return { "x-now-override": override };
-  };
-
-  const fetchCourseScopedData = async (courseId: number) => {
-    try {
-      const feedbackRes = await fetch(`/api/courses/${courseId}/feedback/active`, {
-        headers: getNowOverrideHeaders(),
-      });
-      if (!feedbackRes.ok) {
-        setError("Could not fetch feedback data for this course.");
-        return;
-      }
-      setFeedbackForm(await feedbackRes.json());
-    } catch (error) {
-      console.error("Failed to fetch course scoped dashboard data", error);
-      setError("Could not fetch feedback data for this course.");
-    }
   };
 
   const fetchTodos = async () => {
@@ -83,13 +70,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
 
       const enrolledCourses = (await overviewRes.json()) as Course[];
       setCourses(enrolledCourses);
-      if (enrolledCourses[0]?.id) {
-        setSelectedCourseId(enrolledCourses[0].id);
-        await fetchCourseScopedData(enrolledCourses[0].id);
-      } else {
-        setSelectedCourseId(null);
-        setFeedbackForm(null);
-      }
 
       if (catalogRes.ok) {
         const catalog = (await catalogRes.json()) as Course[];
@@ -113,13 +93,10 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
   useEffect(() => {
     const onTimeOverrideUpdated = () => {
       fetchDashboardData();
-      if (selectedCourseId) {
-        fetchCourseScopedData(selectedCourseId);
-      }
     };
     window.addEventListener("wisenet-time-override-updated", onTimeOverrideUpdated);
     return () => window.removeEventListener("wisenet-time-override-updated", onTimeOverrideUpdated);
-  }, [selectedCourseId]);
+  }, []);
 
   const getSessionPreview = (course: Course): CourseSession[] => {
     const raw = (course as any).session_preview;
@@ -130,44 +107,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
       return Array.isArray(parsed) ? (parsed as CourseSession[]) : [];
     } catch {
       return [];
-    }
-  };
-
-  const submitFeedback = async () => {
-    if (!feedbackForm || !selectedCourseId) return;
-    const answers = feedbackForm.questions
-      .map((q) => {
-        const value = feedbackAnswers[q.id];
-        if (!value || !value.trim()) return null;
-        if (q.question_type === "mcq") {
-          return { question_id: q.id, choice_value: Number(value), answer_text: "" };
-        }
-        return { question_id: q.id, choice_value: null, answer_text: value.trim() };
-      })
-      .filter(Boolean);
-
-    if (answers.length === 0) return;
-
-    setSubmittingFeedback(true);
-    setError("");
-    try {
-      const response = await fetch(`/api/courses/${selectedCourseId}/feedback/submit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...getNowOverrideHeaders() },
-        body: JSON.stringify({ form_id: feedbackForm.form_id, answers }),
-      });
-      if (response.ok) {
-        await fetchCourseScopedData(selectedCourseId);
-        await fetchTodos();
-        setFeedbackAnswers({});
-      } else {
-        const payload = await response.json().catch(() => ({ error: "Failed to submit feedback." }));
-        setError(payload.error || "Failed to submit feedback.");
-      }
-    } catch {
-      setError("Failed to submit feedback.");
-    } finally {
-      setSubmittingFeedback(false);
     }
   };
 
@@ -194,9 +133,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
       onOpenCourse?.(item.course_id);
       return;
     }
-    setSelectedCourseId(item.course_id);
-    await fetchCourseScopedData(item.course_id);
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
   };
 
   const markPreReadCompleted = async (materialId: number) => {
@@ -383,7 +319,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
                             <span className="font-semibold">S{session.session_number}</span>
                             <span className="truncate ml-2">{session.title}</span>
                             <span className="text-slate-500 ml-2">
-                              {new Date(session.session_date).toLocaleDateString()}
+                              {formatSessionDate(session.session_date)}
                             </span>
                           </div>
                         ))}
@@ -420,7 +356,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
                             <span className="font-semibold">S{session.session_number}</span>
                             <span className="truncate ml-2">{session.title}</span>
                             <span className="text-slate-500 ml-2">
-                              {new Date(session.session_date).toLocaleDateString()}
+                              {formatSessionDate(session.session_date)}
                             </span>
                           </div>
                         ))}
@@ -440,68 +376,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
         </div>
       ) : null}
 
-      {feedbackForm && !feedbackForm.already_submitted && (
-        <div className="moodle-card p-6 border border-amber-200 bg-amber-50/40">
-          <div className="flex items-start gap-3 mb-4">
-            <MessageSquareText className="text-amber-600 mt-0.5" size={20} />
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">Anonymous Mid-Course Feedback</h3>
-              <p className="text-sm text-slate-600">
-                Please submit this feedback within 2 days. Faculty will only see aggregated insights.
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            {feedbackForm.questions.map((question) => (
-              <div key={question.id} className="bg-white border border-slate-200 rounded p-4">
-                <p className="text-sm font-semibold text-slate-800 mb-2">{question.question_order}. {question.question_text}</p>
-                {question.question_type === "mcq" ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {(question.options || []).map((option, idx) => (
-                      <label key={idx} className="text-sm flex items-center gap-2 text-slate-700">
-                        <input
-                          type="radio"
-                          name={`q-${question.id}`}
-                          checked={feedbackAnswers[question.id] === String(idx + 1)}
-                          onChange={() =>
-                            setFeedbackAnswers((prev) => ({ ...prev, [question.id]: String(idx + 1) }))
-                          }
-                        />
-                        {option}
-                      </label>
-                    ))}
-                  </div>
-                ) : (
-                  <textarea
-                    rows={3}
-                    className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
-                    placeholder="Share your feedback"
-                    value={feedbackAnswers[question.id] || ""}
-                    onChange={(e) =>
-                      setFeedbackAnswers((prev) => ({ ...prev, [question.id]: e.target.value }))
-                    }
-                  />
-                )}
-              </div>
-            ))}
-
-            <button
-              onClick={submitFeedback}
-              disabled={submittingFeedback}
-              className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black disabled:opacity-70"
-            >
-              {submittingFeedback ? "Submitting..." : "Submit Anonymous Feedback"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {feedbackForm && feedbackForm.already_submitted ? (
-        <div className="moodle-card p-4 text-sm text-emerald-700 border border-emerald-200 bg-emerald-50">
-          Feedback submitted. Thank you.
-        </div>
-      ) : null}
     </div>
   );
 };

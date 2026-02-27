@@ -13,6 +13,13 @@ function toYmd(date: Date) {
   return `${y}-${m}-${d}`;
 }
 
+function formatSessionDate(value: string) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return raw;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString();
+}
+
 const ScheduleBoard: React.FC<ScheduleBoardProps> = ({ sessions, title = "Course Schedule" }) => {
   const today = new Date();
   const year = today.getFullYear();
@@ -99,7 +106,7 @@ const ScheduleBoard: React.FC<ScheduleBoardProps> = ({ sessions, title = "Course
                   <td className="px-3 py-2 border font-semibold">S{session.session_number}</td>
                   <td className="px-3 py-2 border">{session.title}</td>
                   <td className="px-3 py-2 border">
-                    {new Date(session.session_date).toLocaleDateString()}
+                    {formatSessionDate(session.session_date)}
                   </td>
                   <td className="px-3 py-2 border">
                     {session.start_time || "--"} - {session.end_time || "--"}

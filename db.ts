@@ -74,8 +74,8 @@ async function ensureSchema() {
       credits INTEGER DEFAULT 1,
       description TEXT,
       image_url TEXT,
-      start_date TIMESTAMPTZ,
-      end_date TIMESTAMPTZ,
+      start_date DATE,
+      end_date DATE,
       visibility TEXT DEFAULT 'show'
     );
 
@@ -234,6 +234,8 @@ async function ensureSchema() {
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id);
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS credits INTEGER DEFAULT 1;
     ALTER TABLE courses ALTER COLUMN credits SET DEFAULT 1;
+    ALTER TABLE courses ALTER COLUMN start_date TYPE DATE USING start_date::date;
+    ALTER TABLE courses ALTER COLUMN end_date TYPE DATE USING end_date::date;
     UPDATE courses SET credits = 1 WHERE credits IS NULL OR credits <= 0;
     ALTER TABLE course_details ADD COLUMN IF NOT EXISTS credits INTEGER DEFAULT 1;
     ALTER TABLE course_details ALTER COLUMN credits SET DEFAULT 1;

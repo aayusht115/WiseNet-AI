@@ -132,14 +132,11 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
         crumbs.push({ label: 'Learning Analytics', tab: NavigationTab.REPORTS });
         break;
       case NavigationTab.FACULTY_SETUP:
-        crumbs.push({ label: 'Home', tab: NavigationTab.FACULTY_SETUP });
         break;
       case NavigationTab.COURSE_EDITOR:
-        crumbs.push({ label: 'Home', tab: NavigationTab.FACULTY_SETUP });
         crumbs.push({ label: 'Add a new course', tab: NavigationTab.COURSE_EDITOR });
         break;
       case NavigationTab.COURSE_MANAGEMENT:
-        crumbs.push({ label: 'Home', tab: role === "faculty" ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD });
         crumbs.push({ label: 'Course Management', tab: NavigationTab.COURSE_MANAGEMENT });
         break;
       case NavigationTab.FACULTY_ANALYTICS:

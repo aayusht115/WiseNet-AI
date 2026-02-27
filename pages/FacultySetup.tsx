@@ -40,6 +40,13 @@ type FacultyFeedbackInsight = {
   generated_at: string;
 };
 
+function formatSessionDate(value: string) {
+  const raw = String(value || "").trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return raw;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString();
+}
+
 const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse }) => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
@@ -309,7 +316,7 @@ const FacultySetup: React.FC<FacultySetupProps> = ({ onAddCourse, onSelectCourse
                                 <span className="font-semibold">S{session.session_number}</span>
                                 <span className="truncate ml-2">{session.title}</span>
                                 <span className="text-slate-500 ml-2">
-                                  {new Date(session.session_date).toLocaleDateString()}
+                                  {formatSessionDate(session.session_date)}
                                 </span>
                               </div>
                             ))}

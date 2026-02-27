@@ -23,6 +23,14 @@ interface EditableSession {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+type CourseCodeValidationStatus = "idle" | "checking" | "available" | "taken" | "error";
+
+const formatDateInput = (date: Date) => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 const normalizeCredits = (value: unknown) => {
   const parsed = Number(value);
@@ -100,8 +108,14 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
   onSaveAndDisplay,
   onCancel,
 }) => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = formatDateInput(new Date());
+  const defaultEndDate = (() => {
+    const next = new Date();
+    next.setDate(next.getDate() + 120);
+    return formatDateInput(next);
+  })();
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const codeCheckRequestRef = useRef(0);
 
   const [formData, setFormData] = useState<Partial<Course>>({
     name: "",
@@ -110,7 +124,7 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
     visibility: "show",
     credits: 1,
     start_date: today,
-    end_date: new Date(Date.now() + 120 * DAY_MS).toISOString().slice(0, 10),
+    end_date: defaultEndDate,
     description: "",
     image_url: "",
   });
@@ -130,6 +144,10 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [codeValidation, setCodeValidation] = useState<{ status: CourseCodeValidationStatus; message: string }>({
+    status: "idle",
+    message: "",
+  });
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [imageProcessing, setImageProcessing] = useState(false);
 
@@ -159,6 +177,58 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
     }
   };
 
+  const validateCourseCode = async (
+    courseCode: string,
+    options?: { showChecking?: boolean }
+  ): Promise<CourseCodeValidationStatus> => {
+    const trimmedCode = String(courseCode || "").trim();
+    if (!trimmedCode) {
+      setCodeValidation({ status: "idle", message: "" });
+      return "idle";
+    }
+
+    const requestId = codeCheckRequestRef.current + 1;
+    codeCheckRequestRef.current = requestId;
+    if (options?.showChecking ?? true) {
+      setCodeValidation({ status: "checking", message: "Checking Course ID..." });
+    }
+
+    const params = new URLSearchParams({ code: trimmedCode });
+    if (courseId) params.set("exclude_course_id", String(courseId));
+    try {
+      const response = await fetch(`/api/courses/check-code?${params.toString()}`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: "Could not validate Course ID." }));
+        if (codeCheckRequestRef.current === requestId) {
+          setCodeValidation({
+            status: "error",
+            message: payload.error || "Could not validate Course ID.",
+          });
+        }
+        return "error";
+      }
+      const payload = await response.json();
+      const status: CourseCodeValidationStatus = payload?.available ? "available" : "taken";
+      if (codeCheckRequestRef.current === requestId) {
+        setCodeValidation({
+          status,
+          message:
+            payload?.message ||
+            (payload?.available ? "Course ID is available." : "Course ID is already in use."),
+        });
+      }
+      return status;
+    } catch {
+      if (codeCheckRequestRef.current === requestId) {
+        setCodeValidation({
+          status: "error",
+          message: "Could not validate Course ID right now.",
+        });
+      }
+      return "error";
+    }
+  };
+
   const regenerateSchedule = () => {
     const generated = buildAutoSessionPlan(
       String(formData.start_date || ""),
@@ -171,6 +241,18 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
   useEffect(() => {
     loadStudents();
   }, []);
+
+  useEffect(() => {
+    const nextCode = String(formData.code || "").trim();
+    if (!nextCode) {
+      setCodeValidation({ status: "idle", message: "" });
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      void validateCourseCode(nextCode, { showChecking: true });
+    }, 300);
+    return () => window.clearTimeout(timeout);
+  }, [formData.code, courseId]);
 
   useEffect(() => {
     if (!courseId) {
@@ -365,6 +447,18 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
         rows: [] as EditableSession[],
       };
     }
+    if (normalizedRows[0]?.session_date !== startDate) {
+      return {
+        error: "First session date must match the course start date.",
+        rows: [] as EditableSession[],
+      };
+    }
+    if (normalizedRows[normalizedRows.length - 1]?.session_date !== endDate) {
+      return {
+        error: "Last session date must match the course end date.",
+        rows: [] as EditableSession[],
+      };
+    }
 
     return { error: "", rows: normalizedRows };
   };
@@ -377,6 +471,11 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
 
     if (!nextName || !nextCode) {
       setError("Course full name and short name are required.");
+      return;
+    }
+    const codeState = await validateCourseCode(nextCode, { showChecking: false });
+    if (codeState === "taken") {
+      setError("Course ID must be unique. Please choose a different Course ID.");
       return;
     }
     if (!startDate || !endDate) {
@@ -550,14 +649,37 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
               />
             </label>
             <label className="text-sm font-medium text-slate-700">
-              Course short name
+              Course ID (unique short name)
               <input
                 type="text"
                 value={formData.code || ""}
-                onChange={(event) => setFormData((prev) => ({ ...prev, code: event.target.value }))}
+                onChange={(event) => {
+                  const nextCode = event.target.value;
+                  setFormData((prev) => ({ ...prev, code: nextCode }));
+                  setCodeValidation({ status: "idle", message: "" });
+                }}
                 className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
                 required
+                placeholder="e.g. DIG501"
               />
+              {codeValidation.status !== "idle" ? (
+                <p
+                  className={`mt-1 text-xs inline-flex items-center gap-1 ${
+                    codeValidation.status === "available"
+                      ? "text-emerald-700"
+                      : codeValidation.status === "taken"
+                      ? "text-rose-700"
+                      : codeValidation.status === "error"
+                      ? "text-amber-700"
+                      : "text-slate-500"
+                  }`}
+                >
+                  {codeValidation.status === "checking" ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : null}
+                  {codeValidation.message}
+                </p>
+              ) : null}
             </label>
             <label className="text-sm font-medium text-slate-700">
               Instructor

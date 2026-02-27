@@ -83,11 +83,17 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
   const [sessionNotice, setSessionNotice] = useState<{ type: "success" | "error"; text: string } | null>(
     null
   );
+  const [savingCourseMeta, setSavingCourseMeta] = useState(false);
+  const [deletingCourse, setDeletingCourse] = useState(false);
+  const [courseActionNotice, setCourseActionNotice] = useState<{ type: "success" | "error"; text: string } | null>(
+    null
+  );
   const [feedbackForm, setFeedbackForm] = useState<ActiveFeedbackForm | null>(null);
   const [feedbackAnswers, setFeedbackAnswers] = useState<Record<number, string>>({});
   const [feedbackStatus, setFeedbackStatus] = useState<{ type: "success" | "error"; text: string } | null>(
     null
   );
+  const [feedbackSubmitAcknowledged, setFeedbackSubmitAcknowledged] = useState(false);
   const [loadingFeedback, setLoadingFeedback] = useState(false);
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
 
@@ -110,6 +116,16 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     submitting: boolean;
     result: { score: number; total: number } | null;
   } | null>(null);
+  const [courseForm, setCourseForm] = useState({
+    name: "",
+    code: "",
+    instructor: "",
+    description: "",
+    image_url: "",
+    start_date: "",
+    end_date: "",
+    visibility: "show" as "show" | "hide",
+  });
 
   const outcomesText = useMemo(
     () => (details.learning_outcomes || []).join("\n"),
@@ -140,7 +156,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
   const fetchActiveFeedback = async () => {
     if (role !== "student") return;
     setLoadingFeedback(true);
-    setFeedbackStatus(null);
+    setFeedbackStatus((prev) => (prev?.type === "error" ? null : prev));
     try {
       const response = await fetch(`/api/courses/${courseId}/feedback/active`, {
         headers: getNowOverrideHeaders(),
@@ -152,11 +168,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       }
       const payload = await response.json();
       setFeedbackForm(payload);
-      if (payload?.already_submitted) {
-        setFeedbackStatus({ type: "success", text: "Feedback submitted. Thank you." });
-      } else {
-        setFeedbackStatus(null);
-      }
+      setFeedbackStatus((prev) => (prev?.type === "error" ? null : prev));
       setFeedbackAnswers({});
     } catch {
       setFeedbackForm(null);
@@ -178,6 +190,16 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       }
       const data = await detailsRes.json();
       setCourse(data.course);
+      setCourseForm({
+        name: String(data.course?.name || ""),
+        code: String(data.course?.code || ""),
+        instructor: String(data.course?.instructor || ""),
+        description: String(data.course?.description || ""),
+        image_url: String(data.course?.image_url || ""),
+        start_date: String(data.course?.start_date || "").slice(0, 10),
+        end_date: String(data.course?.end_date || "").slice(0, 10),
+        visibility: data.course?.visibility === "hide" ? "hide" : "show",
+      });
       setDetails(data.details || {});
       setSections(data.sections || []);
       setMaterials(data.materials || []);
@@ -222,6 +244,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
 
   useEffect(() => {
     fetchAll();
+    setFeedbackSubmitAcknowledged(false);
   }, [courseId, role]);
 
   useEffect(() => {
@@ -232,6 +255,15 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     window.addEventListener("wisenet-time-override-updated", onTimeOverrideUpdated);
     return () => window.removeEventListener("wisenet-time-override-updated", onTimeOverrideUpdated);
   }, [courseId, role]);
+
+  useEffect(() => {
+    if (!feedbackSubmitAcknowledged) return;
+    const timer = window.setTimeout(() => {
+      setFeedbackSubmitAcknowledged(false);
+      setFeedbackStatus(null);
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [feedbackSubmitAcknowledged]);
 
   const updateEvaluationRow = (index: number, key: keyof EvaluationComponent, value: string | number) => {
     setDetails((prev) => {
@@ -575,6 +607,64 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     await fetchAll();
   };
 
+  const handleSaveCourseMeta = async () => {
+    if (role !== "faculty") return;
+    setSavingCourseMeta(true);
+    setCourseActionNotice(null);
+    try {
+      const response = await fetch(`/api/courses/${courseId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: courseForm.name,
+          code: courseForm.code,
+          instructor: courseForm.instructor,
+          description: courseForm.description,
+          image_url: courseForm.image_url || null,
+          start_date: courseForm.start_date,
+          end_date: courseForm.end_date,
+          visibility: courseForm.visibility,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: "Failed to save course settings." }));
+        setCourseActionNotice({ type: "error", text: payload.error || "Failed to save course settings." });
+        return;
+      }
+      setCourseActionNotice({ type: "success", text: "Course settings updated successfully." });
+      await fetchAll();
+    } catch {
+      setCourseActionNotice({ type: "error", text: "Failed to save course settings." });
+    } finally {
+      setSavingCourseMeta(false);
+    }
+  };
+
+  const handleDeleteCourse = async () => {
+    if (role !== "faculty") return;
+    const confirmed = window.confirm(
+      "Delete this course permanently? This will remove sessions, materials, enrollments, quizzes and feedback records for this course."
+    );
+    if (!confirmed) return;
+    setDeletingCourse(true);
+    setCourseActionNotice(null);
+    try {
+      const response = await fetch(`/api/courses/${courseId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: "Failed to delete course." }));
+        setCourseActionNotice({ type: "error", text: payload.error || "Failed to delete course." });
+        return;
+      }
+      onBack();
+    } catch {
+      setCourseActionNotice({ type: "error", text: "Failed to delete course." });
+    } finally {
+      setDeletingCourse(false);
+    }
+  };
+
   const submitFeedback = async () => {
     if (!feedbackForm) return;
     const answers = feedbackForm.questions
@@ -621,6 +711,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       setFeedbackAnswers({});
       await fetchActiveFeedback();
       window.dispatchEvent(new Event("wisenet-feedback-updated"));
+      setFeedbackSubmitAcknowledged(true);
       setFeedbackStatus({ type: "success", text: "Feedback submitted. This task is now complete." });
     } catch {
       setFeedbackStatus({ type: "error", text: "Failed to submit feedback." });
@@ -747,9 +838,9 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         </div>
       ) : null}
 
-      {feedbackForm?.already_submitted ? (
+      {feedbackSubmitAcknowledged && feedbackStatus?.type === "success" ? (
         <div className="moodle-card p-4 border border-emerald-200 bg-emerald-50 text-sm text-emerald-700">
-          Feedback completed for this course. This item is removed from your To-do list.
+          {feedbackStatus.text}
         </div>
       ) : null}
 
@@ -901,7 +992,118 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
 
       {activeTab === "course" && (
         <div className="moodle-card p-6 space-y-5">
-          <h3 className="text-lg font-bold">Course Details (DB-backed)</h3>
+          <h3 className="text-lg font-bold">Course Settings</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="text-sm font-medium text-slate-700">
+              Course Name
+              <input
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.name}
+                onChange={(e) => setCourseForm((prev) => ({ ...prev, name: e.target.value }))}
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              Course Code
+              <input
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.code}
+                onChange={(e) => setCourseForm((prev) => ({ ...prev, code: e.target.value }))}
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              Instructor Name
+              <input
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.instructor}
+                onChange={(e) => setCourseForm((prev) => ({ ...prev, instructor: e.target.value }))}
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              Visibility
+              <select
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.visibility}
+                onChange={(e) =>
+                  setCourseForm((prev) => ({
+                    ...prev,
+                    visibility: e.target.value === "hide" ? "hide" : "show",
+                  }))
+                }
+              >
+                <option value="show">Show</option>
+                <option value="hide">Hide</option>
+              </select>
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              Start Date
+              <input
+                type="date"
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.start_date}
+                onChange={(e) => setCourseForm((prev) => ({ ...prev, start_date: e.target.value }))}
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700">
+              End Date
+              <input
+                type="date"
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.end_date}
+                onChange={(e) => setCourseForm((prev) => ({ ...prev, end_date: e.target.value }))}
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700 md:col-span-2">
+              Image URL
+              <input
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.image_url}
+                onChange={(e) => setCourseForm((prev) => ({ ...prev, image_url: e.target.value }))}
+              />
+            </label>
+            <label className="text-sm font-medium text-slate-700 md:col-span-2">
+              Description
+              <textarea
+                rows={3}
+                className="mt-1 w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                value={courseForm.description}
+                onChange={(e) => setCourseForm((prev) => ({ ...prev, description: e.target.value }))}
+              />
+            </label>
+          </div>
+
+          {courseActionNotice ? (
+            <div
+              className={`rounded border px-3 py-2 text-sm ${
+                courseActionNotice.type === "success"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border-rose-200 bg-rose-50 text-rose-700"
+              }`}
+            >
+              {courseActionNotice.text}
+            </div>
+          ) : null}
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSaveCourseMeta}
+              disabled={savingCourseMeta}
+              className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black disabled:opacity-70"
+            >
+              {savingCourseMeta ? "Saving..." : "Save Course Settings"}
+            </button>
+            <button
+              onClick={handleDeleteCourse}
+              disabled={deletingCourse}
+              className="px-4 py-2 border border-rose-300 text-rose-700 rounded text-sm font-bold hover:bg-rose-50 disabled:opacity-70"
+            >
+              {deletingCourse ? "Deleting..." : "Delete Course"}
+            </button>
+          </div>
+
+          <div className="border-t border-slate-200 pt-5 space-y-5">
+            <h3 className="text-lg font-bold">Course Details (DB-backed)</h3>
+          </div>
+
           <div className="grid grid-cols-1 gap-4">
             <label className="text-sm font-medium text-slate-700">
               Faculty Info

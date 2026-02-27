@@ -293,6 +293,18 @@ function normalizeSessionPayload(
       };
     }
   }
+  if (normalized[0]?.session_date !== startDate) {
+    return {
+      sessions: [],
+      error: "First session date must match the course start date.",
+    };
+  }
+  if (normalized[normalized.length - 1]?.session_date !== endDate) {
+    return {
+      sessions: [],
+      error: "Last session date must match the course end date.",
+    };
+  }
 
   return {
     sessions: normalized.map((row, idx) => ({
@@ -1286,6 +1298,33 @@ async function startServer() {
     res.json(courses);
   });
 
+  app.get("/api/courses/check-code", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const rawCode = String(req.query?.code || "").trim();
+    if (!rawCode) {
+      return res.status(400).json({ error: "Course ID is required." });
+    }
+
+    const excludeCourseId = Number(req.query?.exclude_course_id || 0);
+    const existing = await queryOne<{ id: number }>(
+      excludeCourseId > 0
+        ? "SELECT id FROM courses WHERE LOWER(code) = LOWER($1) AND created_by = $2 AND id <> $3 LIMIT 1"
+        : "SELECT id FROM courses WHERE LOWER(code) = LOWER($1) AND created_by = $2 LIMIT 1",
+      excludeCourseId > 0 ? [rawCode, req.user.id, excludeCourseId] : [rawCode, req.user.id]
+    );
+
+    if (existing) {
+      return res.json({
+        available: false,
+        message: "Course ID is already in use. Please choose a different one.",
+      });
+    }
+    return res.json({
+      available: true,
+      message: "Course ID is available.",
+    });
+  });
+
   app.get("/api/courses/catalog", authenticate, async (req: any, res) => {
     if (req.user.role !== "student") return res.status(403).json({ error: "Forbidden" });
 
@@ -1482,7 +1521,26 @@ async function startServer() {
     if (!(await canAccessCourse(req.user, courseId))) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    const course = await queryOne("SELECT * FROM courses WHERE id = $1", [courseId]);
+    const course = await queryOne(
+      `
+        SELECT
+          id,
+          name,
+          code,
+          category_id,
+          instructor,
+          created_by,
+          credits,
+          description,
+          image_url,
+          start_date::date AS start_date,
+          end_date::date AS end_date,
+          visibility
+        FROM courses
+        WHERE id = $1
+      `,
+      [courseId]
+    );
     res.json(course);
   });
 
@@ -1656,6 +1714,72 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  app.delete("/api/courses/:id", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const courseId = Number(req.params.id);
+    if (!Number.isFinite(courseId) || courseId <= 0) {
+      return res.status(400).json({ error: "Invalid course id" });
+    }
+    if (!(await canManageCourse(req.user, courseId))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const existing = await queryOne<{ id: number }>("SELECT id FROM courses WHERE id = $1", [courseId]);
+    if (!existing) return res.status(404).json({ error: "Course not found" });
+
+    await execute(
+      `
+        DELETE FROM feedback_submissions
+        WHERE course_id = $1
+      `,
+      [courseId]
+    );
+    await execute(
+      `
+        DELETE FROM feedback_forms
+        WHERE course_id = $1
+      `,
+      [courseId]
+    );
+    await execute(
+      `
+        DELETE FROM material_learning_progress
+        WHERE material_id IN (SELECT id FROM course_materials WHERE course_id = $1)
+      `,
+      [courseId]
+    );
+    await execute(
+      `
+        DELETE FROM material_quiz_attempts
+        WHERE material_id IN (SELECT id FROM course_materials WHERE course_id = $1)
+      `,
+      [courseId]
+    );
+    await execute(
+      `
+        DELETE FROM material_quiz_questions
+        WHERE material_id IN (SELECT id FROM course_materials WHERE course_id = $1)
+      `,
+      [courseId]
+    );
+    await execute("DELETE FROM course_materials WHERE course_id = $1", [courseId]);
+    await execute(
+      `
+        DELETE FROM submissions
+        WHERE activity_id IN (SELECT id FROM activities WHERE course_id = $1)
+      `,
+      [courseId]
+    );
+    await execute("DELETE FROM activities WHERE course_id = $1", [courseId]);
+    await execute("DELETE FROM enrollments WHERE course_id = $1", [courseId]);
+    await execute("DELETE FROM course_sessions WHERE course_id = $1", [courseId]);
+    await execute("DELETE FROM course_details WHERE course_id = $1", [courseId]);
+    await execute("DELETE FROM sections WHERE course_id = $1", [courseId]);
+    await execute("DELETE FROM courses WHERE id = $1", [courseId]);
+
+    res.json({ success: true });
+  });
+
   app.get("/api/courses/:id/sections", authenticate, async (req: any, res) => {
     const courseId = Number(req.params.id);
     if (!(await canAccessCourse(req.user, courseId))) {
@@ -1763,7 +1887,7 @@ async function startServer() {
 
     const session = await queryOne<any>(
       `
-        SELECT id, title, session_date, start_time, end_time, mode
+        SELECT id, session_number, title, session_date, start_time, end_time, mode
         FROM course_sessions
         WHERE id = $1 AND course_id = $2
       `,
@@ -1784,7 +1908,7 @@ async function startServer() {
     }
 
     const course = await queryOne<any>(
-      "SELECT start_date, end_date FROM courses WHERE id = $1",
+      "SELECT start_date, end_date, credits FROM courses WHERE id = $1",
       [courseId]
     );
     const courseStart = normalizeDateOnly(course?.start_date);
@@ -1794,6 +1918,13 @@ async function startServer() {
     }
     if (normalizedSessionDate < courseStart || normalizedSessionDate > courseEnd) {
       return res.status(400).json({ error: "Session date must be within course start/end dates." });
+    }
+    const expectedSessions = sessionsRequiredForCredits(Number(course?.credits || 1));
+    if (Number(session.session_number) === 1 && normalizedSessionDate !== courseStart) {
+      return res.status(400).json({ error: "Session S1 date must match the course start date." });
+    }
+    if (Number(session.session_number) === expectedSessions && normalizedSessionDate !== courseEnd) {
+      return res.status(400).json({ error: "Last session date must match the course end date." });
     }
 
     await execute(
@@ -1969,6 +2100,7 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden" });
     }
     await ensureFeedbackFormForCourse(courseId);
+    const nowOverride = getNowOverride(req);
 
     const forms = await query<any>(
       `
@@ -1980,6 +2112,28 @@ async function startServer() {
       [courseId]
     );
     if (forms.length === 0) return res.json({ forms: [] });
+
+    for (const form of forms) {
+      await ensureFeedbackInsightForForm(Number(form.id), nowOverride);
+    }
+
+    const formIds = forms.map((form) => Number(form.id)).filter((id) => id > 0);
+    let insightRows: any[] = [];
+    if (formIds.length > 0) {
+      const placeholders = formIds.map((_, idx) => `$${idx + 1}`).join(", ");
+      insightRows = await query<any>(
+        `
+          SELECT form_id, summary_text
+          FROM feedback_insights
+          WHERE form_id IN (${placeholders})
+        `,
+        formIds
+      );
+    }
+    const insightByFormId = new Map<number, string>();
+    insightRows.forEach((row) => {
+      insightByFormId.set(Number(row.form_id), String(row.summary_text || ""));
+    });
 
     const responseForms = [];
     for (const form of forms) {
@@ -2045,6 +2199,7 @@ async function startServer() {
         open_at: form.open_at,
         due_at: form.due_at,
         submissions: submissions.length,
+        summary_text: insightByFormId.get(Number(form.id)) || "",
         metrics,
       });
     }
