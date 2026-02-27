@@ -397,10 +397,32 @@ function extractLikelyPdfText(sourceFileBase64: string) {
             .replace(/\\t/g, " ")
         )
         .filter((chunk) => /[A-Za-z]/.test(chunk)) || [];
-    return textChunks.join(" ").replace(/\s+/g, " ").trim();
+    return stripUnsupportedTextChars(textChunks.join(" ").replace(/\s+/g, " ").trim());
   } catch {
     return "";
   }
+}
+
+function stripUnsupportedTextChars(value: any): string {
+  return String(value ?? "")
+    .replace(/\u0000/g, " ")
+    .replace(/[\uD800-\uDFFF]/g, "");
+}
+
+function normalizePdfBase64Input(value: any): string | null {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const withoutPrefix = raw.replace(/^data:[^;]+;base64,/i, "");
+  const compact = stripUnsupportedTextChars(withoutPrefix).replace(/\s+/g, "");
+  if (!compact) return null;
+
+  const isBase64 = /^[A-Za-z0-9+/=]+$/.test(compact);
+  if (isBase64) return compact;
+
+  // If malformed binary text arrives, re-encode it into clean base64.
+  return Buffer.from(compact, "latin1").toString("base64");
 }
 
 function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
@@ -2237,18 +2259,85 @@ async function startServer() {
         };
       });
 
+      const formMcqMetrics = metrics
+        .filter((metric) => metric.question_type === "mcq")
+        .map((metric) => ({
+          question_text: String(metric.question_text || ""),
+          average: Number(metric.average || 0),
+          responses: Number(metric.responses || 0),
+        }));
+      const formTextComments = metrics
+        .filter((metric) => metric.question_type === "text")
+        .flatMap((metric) => (Array.isArray(metric.comments) ? metric.comments : []))
+        .map((comment) => String(comment || "").trim())
+        .filter(Boolean);
+      const fallbackSummaryText = buildTextFeedbackSummary(submissions.length, formMcqMetrics, formTextComments);
+
       responseForms.push({
         form_id: form.id,
         trigger_session_number: form.trigger_session_number,
         open_at: form.open_at,
         due_at: form.due_at,
         submissions: submissions.length,
-        summary_text: insightByFormId.get(Number(form.id)) || "",
+        summary_text: insightByFormId.get(Number(form.id)) || fallbackSummaryText,
         metrics,
       });
     }
 
-    res.json({ forms: responseForms });
+    const overallSubmissions = responseForms.reduce(
+      (sum, form) => sum + (Number(form.submissions) || 0),
+      0
+    );
+    const weightedMcqByQuestion = new Map<
+      string,
+      { question_text: string; total_score: number; responses: number }
+    >();
+    const overallTextComments: string[] = [];
+
+    for (const form of responseForms) {
+      for (const metric of form.metrics || []) {
+        if (metric.question_type === "mcq") {
+          const questionText = String(metric.question_text || "");
+          const responses = Number(metric.responses || 0);
+          const average = Number(metric.average || 0);
+          const current = weightedMcqByQuestion.get(questionText) || {
+            question_text: questionText,
+            total_score: 0,
+            responses: 0,
+          };
+          current.total_score += average * responses;
+          current.responses += responses;
+          weightedMcqByQuestion.set(questionText, current);
+        } else {
+          const comments = Array.isArray(metric.comments) ? metric.comments : [];
+          comments.forEach((comment) => {
+            const normalized = String(comment || "").trim();
+            if (normalized) overallTextComments.push(normalized);
+          });
+        }
+      }
+    }
+
+    const overallMcqMetrics = Array.from(weightedMcqByQuestion.values()).map((metric) => ({
+      question_text: metric.question_text,
+      average: metric.responses > 0 ? Number((metric.total_score / metric.responses).toFixed(2)) : 0,
+      responses: metric.responses,
+    }));
+    const overallSummaryText = buildTextFeedbackSummary(
+      overallSubmissions,
+      overallMcqMetrics,
+      overallTextComments
+    );
+
+    res.json({
+      forms: responseForms,
+      overall: {
+        submissions: overallSubmissions,
+        summary_text: overallSummaryText,
+        mcq_metrics: overallMcqMetrics,
+        comments_count: overallTextComments.length,
+      },
+    });
   });
 
   app.get("/api/faculty/feedback-insights/pending", authenticate, async (req: any, res) => {
@@ -2548,6 +2637,8 @@ async function startServer() {
       is_assigned,
       due_at,
     } = req.body || {};
+    const normalizedPdfBase64 =
+      source_type === "pdf" ? normalizePdfBase64Input(source_file_base64) : null;
     if (!section_id || !title || !source_type) {
       return res.status(400).json({ error: "section_id, title and source_type are required" });
     }
@@ -2557,7 +2648,7 @@ async function startServer() {
     if (source_type === "link" && !source_url) {
       return res.status(400).json({ error: "source_url is required for link source type" });
     }
-    if (source_type === "pdf" && !source_file_base64 && !source_url) {
+    if (source_type === "pdf" && !normalizedPdfBase64 && !source_url) {
       return res.status(400).json({ error: "Upload a PDF file or provide a PDF URL" });
     }
 
@@ -2568,14 +2659,15 @@ async function startServer() {
     if (!section) return res.status(400).json({ error: "Invalid section" });
 
     let materialContent = String(content || "").trim();
-    if (!materialContent && source_type === "pdf" && source_file_base64) {
+    if (!materialContent && source_type === "pdf" && normalizedPdfBase64) {
       try {
-        materialContent = await extractPdfTextWithPython(String(source_file_base64));
+        materialContent = await extractPdfTextWithPython(normalizedPdfBase64);
       } catch (error) {
         console.error("Python PDF extraction failed, using fallback extractor", error);
-        materialContent = extractLikelyPdfText(String(source_file_base64));
+        materialContent = extractLikelyPdfText(normalizedPdfBase64);
       }
     }
+    materialContent = stripUnsupportedTextChars(materialContent).trim();
     if (!materialContent) {
       if (source_type === "link") {
         return res.status(400).json({
@@ -2600,6 +2692,11 @@ async function startServer() {
     const assigned = Boolean(is_assigned);
     const dueDateOnly = normalizeDateOnly(due_at);
     const dueAt = dueDateOnly ? `${dueDateOnly}T23:59:59Z` : null;
+    const normalizedTitle = stripUnsupportedTextChars(String(title)).trim();
+    const normalizedSummary = stripUnsupportedTextChars(summary.summary || "");
+    const normalizedTakeaways = (summary.keyTakeaways || [])
+      .map((item) => stripUnsupportedTextChars(item))
+      .filter((item) => item.trim().length > 0);
 
     const material = await queryOne<{ id: number }>(
       `
@@ -2641,14 +2738,14 @@ async function startServer() {
       [
         courseId,
         Number(section_id),
-        String(title),
+        normalizedTitle,
         String(source_type),
-        source_url ? String(source_url) : null,
-        source_file_name ? String(source_file_name) : null,
-        source_file_base64 ? String(source_file_base64) : null,
+        source_url ? stripUnsupportedTextChars(String(source_url)) : null,
+        source_file_name ? stripUnsupportedTextChars(String(source_file_name)) : null,
+        normalizedPdfBase64,
         materialContent,
-        summary.summary,
-        JSON.stringify(summary.keyTakeaways || []),
+        normalizedSummary,
+        JSON.stringify(normalizedTakeaways),
         assigned,
         dueAt,
         req.user.id,

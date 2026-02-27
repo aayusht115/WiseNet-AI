@@ -23,6 +23,16 @@ type FeedbackFormAnalytics = {
 
 type FeedbackAnalyticsResponse = {
   forms: FeedbackFormAnalytics[];
+  overall?: {
+    submissions: number;
+    summary_text: string;
+    mcq_metrics: Array<{
+      question_text: string;
+      average: number;
+      responses: number;
+    }>;
+    comments_count: number;
+  };
 };
 
 type QuizAnalytics = {
@@ -55,7 +65,12 @@ const FacultyAnalytics: React.FC = () => {
   );
 
   const latestFeedback = useMemo(
-    () => (feedbackAnalytics.forms || []).slice().sort((a, b) => Number(b.form_id) - Number(a.form_id))[0] || null,
+    () => {
+      const sorted = (feedbackAnalytics.forms || [])
+        .slice()
+        .sort((a, b) => Number(b.form_id) - Number(a.form_id));
+      return sorted.find((form) => Number(form.submissions || 0) > 0) || sorted[0] || null;
+    },
     [feedbackAnalytics.forms]
   );
 
@@ -190,6 +205,19 @@ const FacultyAnalytics: React.FC = () => {
             <div className="flex items-center gap-2">
               <MessageSquareText size={18} className="text-moodle-blue" />
               <h3 className="text-xl font-bold text-slate-800">Anonymous Feedback Insights</h3>
+            </div>
+
+            <div className="rounded border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-2">
+                Overall Course Summary (All Feedback Cycles)
+              </p>
+              <p className="text-xs text-slate-500 mb-2">
+                Total responses: {Number(feedbackAnalytics.overall?.submissions || 0)} • Written comments:{" "}
+                {Number(feedbackAnalytics.overall?.comments_count || 0)}
+              </p>
+              <p className="text-sm text-slate-700">
+                {feedbackAnalytics.overall?.summary_text || "No feedback analytics available yet for this subject."}
+              </p>
             </div>
 
             {!latestFeedback ? (
