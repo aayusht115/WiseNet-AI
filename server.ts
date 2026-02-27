@@ -413,6 +413,17 @@ function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error instanceof Error ? error : new Error(String(error || "Unknown child process error")));
+    };
+    const done = (text: string) => {
+      if (settled) return;
+      settled = true;
+      resolve(text);
+    };
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -420,23 +431,34 @@ function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", (error) => reject(error));
+    child.on("error", (error) => fail(error));
+    child.stdin.on("error", (error: any) => {
+      if (error?.code === "EPIPE") {
+        fail(new Error("PDF extractor stdin closed unexpectedly (EPIPE)."));
+        return;
+      }
+      fail(error);
+    });
 
     child.on("close", (code) => {
+      if (settled) return;
       if (code !== 0) {
-        return reject(new Error(stderr.trim() || `PDF extractor exited with status ${code}`));
+        return fail(new Error(stderr.trim() || `PDF extractor exited with status ${code}`));
       }
       try {
         const parsed = JSON.parse(stdout);
-        if (parsed.error) return reject(new Error(parsed.error));
-        resolve(String(parsed.text || ""));
+        if (parsed.error) return fail(new Error(parsed.error));
+        done(String(parsed.text || ""));
       } catch {
-        reject(new Error("Failed to parse PDF extractor output"));
+        fail(new Error("Failed to parse PDF extractor output"));
       }
     });
 
-    child.stdin.write(JSON.stringify({ fileBase64: sourceFileBase64 }));
-    child.stdin.end();
+    try {
+      child.stdin.end(JSON.stringify({ fileBase64: sourceFileBase64 }));
+    } catch (error) {
+      fail(error);
+    }
   });
 }
 
@@ -560,6 +582,17 @@ function summarizeWithPegasus(title: string, content: string): Promise<SummaryPa
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error instanceof Error ? error : new Error(String(error || "Unknown child process error")));
+    };
+    const done = (payload: SummaryPayload) => {
+      if (settled) return;
+      settled = true;
+      resolve(payload);
+    };
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -567,25 +600,36 @@ function summarizeWithPegasus(title: string, content: string): Promise<SummaryPa
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", (error) => reject(error));
+    child.on("error", (error) => fail(error));
+    child.stdin.on("error", (error: any) => {
+      if (error?.code === "EPIPE") {
+        fail(new Error("Pegasus stdin closed unexpectedly (EPIPE)."));
+        return;
+      }
+      fail(error);
+    });
 
     child.on("close", (code) => {
+      if (settled) return;
       if (code !== 0) {
-        return reject(new Error(stderr.trim() || `Pegasus process exited with status ${code}`));
+        return fail(new Error(stderr.trim() || `Pegasus process exited with status ${code}`));
       }
       try {
         const jsonStart = stdout.indexOf("{");
         const candidate = jsonStart >= 0 ? stdout.slice(jsonStart) : stdout;
         const parsed = JSON.parse(candidate);
-        if (parsed.error) return reject(new Error(parsed.error));
-        resolve(parsed as SummaryPayload);
+        if (parsed.error) return fail(new Error(parsed.error));
+        done(parsed as SummaryPayload);
       } catch {
-        reject(new Error("Failed to parse Pegasus output"));
+        fail(new Error("Failed to parse Pegasus output"));
       }
     });
 
-    child.stdin.write(JSON.stringify({ title, content }));
-    child.stdin.end();
+    try {
+      child.stdin.end(JSON.stringify({ title, content }));
+    } catch (error) {
+      fail(error);
+    }
   });
 }
 
