@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS courses (
   category_id INTEGER REFERENCES categories(id),
   instructor TEXT,
   created_by INTEGER REFERENCES users(id),
-  credits INTEGER,
+  credits INTEGER DEFAULT 1,
   description TEXT,
   image_url TEXT,
   start_date TIMESTAMPTZ,
@@ -67,10 +67,13 @@ CREATE TABLE IF NOT EXISTS course_details (
   course_id INTEGER PRIMARY KEY REFERENCES courses(id),
   faculty_info TEXT,
   teaching_assistant TEXT,
-  credits INTEGER DEFAULT 2,
+  credits INTEGER DEFAULT 1,
+  feedback_trigger_session INTEGER DEFAULT 4,
   learning_outcomes JSONB DEFAULT '[]'::jsonb,
   evaluation_components JSONB DEFAULT '[]'::jsonb
 );
+
+ALTER TABLE course_details ADD COLUMN IF NOT EXISTS feedback_trigger_session INTEGER DEFAULT 4;
 
 CREATE TABLE IF NOT EXISTS course_materials (
   id SERIAL PRIMARY KEY,
@@ -86,6 +89,7 @@ CREATE TABLE IF NOT EXISTS course_materials (
   key_takeaways JSONB DEFAULT '[]'::jsonb,
   is_assigned BOOLEAN NOT NULL DEFAULT FALSE,
   assigned_at TIMESTAMPTZ,
+  due_at TIMESTAMPTZ,
   created_by INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -94,6 +98,7 @@ ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS source_file_name TEXT;
 ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS source_file_base64 TEXT;
 ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS is_assigned BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ;
+ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS material_quiz_questions (
   id SERIAL PRIMARY KEY,
@@ -157,6 +162,21 @@ CREATE TABLE IF NOT EXISTS feedback_submissions (
   submitted_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (form_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS feedback_insights (
+  id SERIAL PRIMARY KEY,
+  form_id INTEGER UNIQUE REFERENCES feedback_forms(id) ON DELETE CASCADE,
+  course_id INTEGER REFERENCES courses(id),
+  submissions_count INTEGER NOT NULL DEFAULT 0,
+  summary_text TEXT NOT NULL DEFAULT '',
+  metrics_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  text_comments_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+  generated_at TIMESTAMPTZ DEFAULT NOW(),
+  viewed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_forms_due_at ON feedback_forms (due_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_insights_course_viewed ON feedback_insights (course_id, viewed_at);
 
 CREATE TABLE IF NOT EXISTS material_learning_progress (
   material_id INTEGER REFERENCES course_materials(id) ON DELETE CASCADE,

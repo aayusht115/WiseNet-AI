@@ -6,7 +6,9 @@ export interface Course {
   progress: number;
   instructor: string;
   created_by?: number;
+  credits?: number;
   is_enrolled?: boolean;
+  session_preview?: CourseSession[];
   nextDeadline?: string;
   category_id?: number;
   description?: string;
@@ -51,6 +53,7 @@ export interface CourseMaterial {
   latest_total?: number;
   is_assigned?: boolean;
   assigned_at?: string;
+  due_at?: string;
 }
 
 export interface CourseSession {
@@ -70,6 +73,7 @@ export interface FeedbackQuestion {
   question_text: string;
   question_type: "mcq" | "text";
   options?: string[];
+  required?: boolean;
 }
 
 export interface ActiveFeedbackForm {
@@ -93,6 +97,7 @@ export interface CourseDetail {
   faculty_info?: string;
   teaching_assistant?: string;
   credits?: number;
+  feedback_trigger_session?: number;
   learning_outcomes?: string[];
   evaluation_components?: EvaluationComponent[];
 }

@@ -1,10 +1,9 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   LayoutDashboard, 
   CalendarDays, 
   FileText, 
-  BrainCircuit, 
   Search, 
   Bell, 
   UserCircle,
@@ -13,12 +12,13 @@ import {
   PieChart,
   Users,
   Menu,
-  X,
   MessageSquare,
   ChevronRight,
   Home,
   GraduationCap,
-  BookOpen
+  BookOpen,
+  Clock3,
+  RotateCcw
 } from 'lucide-react';
 import { NavigationTab, UserRole, User } from '../types';
 
@@ -68,8 +68,44 @@ const SidebarItem: React.FC<{
 );
 
 const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout }) => {
+  const TIME_OVERRIDE_KEY = "wisenet_time_override";
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isTimeDialogOpen, setIsTimeDialogOpen] = useState(false);
+  const [activeTimeOverride, setActiveTimeOverride] = useState<string>("");
+  const [timeInputValue, setTimeInputValue] = useState<string>("");
+
+  const toLocalDateTimeInput = (isoString: string) => {
+    const parsed = new Date(isoString);
+    if (Number.isNaN(parsed.getTime())) return "";
+    const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+    return local.toISOString().slice(0, 16);
+  };
+
+  useEffect(() => {
+    const stored = localStorage.getItem(TIME_OVERRIDE_KEY) || "";
+    setActiveTimeOverride(stored);
+    setTimeInputValue(stored ? toLocalDateTimeInput(stored) : "");
+  }, []);
+
+  const saveTimeOverride = () => {
+    if (!timeInputValue) return;
+    const parsed = new Date(timeInputValue);
+    if (Number.isNaN(parsed.getTime())) return;
+    const iso = parsed.toISOString();
+    localStorage.setItem(TIME_OVERRIDE_KEY, iso);
+    setActiveTimeOverride(iso);
+    window.dispatchEvent(new CustomEvent("wisenet-time-override-updated"));
+    setIsTimeDialogOpen(false);
+  };
+
+  const resetTimeOverride = () => {
+    localStorage.removeItem(TIME_OVERRIDE_KEY);
+    setActiveTimeOverride("");
+    setTimeInputValue("");
+    window.dispatchEvent(new CustomEvent("wisenet-time-override-updated"));
+    setIsTimeDialogOpen(false);
+  };
 
   const getBreadcrumbs = () => {
     const crumbs = [
@@ -185,6 +221,19 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
             />
           </div>
 
+          <button
+            onClick={() => setIsTimeDialogOpen((prev) => !prev)}
+            className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold transition-colors inline-flex items-center gap-1.5 ${
+              activeTimeOverride
+                ? "border-amber-300 bg-amber-50 text-amber-700"
+                : "border-slate-300 text-slate-600 hover:bg-slate-50"
+            }`}
+            title="Set test time for feedback/todo checks"
+          >
+            <Clock3 size={14} />
+            {activeTimeOverride ? "Custom Time" : "Time"}
+          </button>
+
           <button className="p-2 text-slate-500 hover:text-moodle-blue transition-colors relative">
             <Bell size={20} />
             <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
@@ -225,6 +274,54 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
           </div>
         </div>
       </header>
+
+      {isTimeDialogOpen ? (
+        <div className="absolute right-4 top-16 w-80 bg-white rounded-lg border border-slate-200 shadow-xl p-4 z-50 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-bold text-slate-800">Dashboard Time Settings</p>
+            <button
+              onClick={() => setIsTimeDialogOpen(false)}
+              className="text-xs text-slate-500 hover:text-slate-700"
+            >
+              Close
+            </button>
+          </div>
+          <p className="text-xs text-slate-500">
+            System time: {new Date().toLocaleString()}
+          </p>
+          <label className="text-xs font-semibold text-slate-700 block">
+            Custom test time
+            <input
+              type="datetime-local"
+              value={timeInputValue}
+              onChange={(event) => setTimeInputValue(event.target.value)}
+              className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-xs"
+            />
+          </label>
+          {activeTimeOverride ? (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+              Active override: {new Date(activeTimeOverride).toLocaleString()}
+            </p>
+          ) : (
+            <p className="text-xs text-slate-500">No override active. Feedback checks use live current time.</p>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={saveTimeOverride}
+              className="px-3 py-1.5 bg-slate-900 text-white rounded text-xs font-bold"
+            >
+              Save custom time
+            </button>
+            <button
+              onClick={resetTimeOverride}
+              className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 inline-flex items-center gap-1"
+            >
+              <RotateCcw size={12} />
+              Reset to current
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Moodle Sidebar */}
@@ -304,19 +401,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
               </>
             )}
           </nav>
-          
-          <div className="p-4 border-t border-slate-200">
-            <div className="bg-white rounded-lg p-3 border border-slate-200 shadow-sm">
-              <div className="flex items-center space-x-2 mb-2">
-                <BrainCircuit size={16} className="text-moodle-blue" />
-                <span className="text-xs font-bold text-slate-700">AI Assistant</span>
-              </div>
-              <p className="text-[10px] text-slate-500 leading-tight mb-2">Need help with your course material?</p>
-              <button className="w-full py-1.5 bg-moodle-blue text-white rounded text-[10px] font-semibold hover:bg-blue-700 transition-colors">
-                Ask Ekosh
-              </button>
-            </div>
-          </div>
         </aside>
 
         {/* Main Content Area */}

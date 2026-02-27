@@ -1,39 +1,70 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { BookOpen, Loader2, MessageSquareText } from "lucide-react";
 import { ActiveFeedbackForm, Course, CourseSession } from "../types";
-import ScheduleBoard from "../components/ScheduleBoard";
 
 interface DashboardProps {
   onOpenCourse?: (courseId: number) => void;
 }
 
+type TodoItem = {
+  task_type: "pre_read" | "feedback";
+  item_id: number;
+  item_title: string;
+  course_id: number;
+  course_name: string;
+  course_code: string;
+  section_title: string;
+  due_at: string;
+};
+
 const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [availableCourses, setAvailableCourses] = useState<Course[]>([]);
+  const [todos, setTodos] = useState<TodoItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingTodos, setLoadingTodos] = useState(false);
   const [error, setError] = useState<string>("");
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
-  const [sessions, setSessions] = useState<CourseSession[]>([]);
   const [feedbackForm, setFeedbackForm] = useState<ActiveFeedbackForm | null>(null);
   const [feedbackAnswers, setFeedbackAnswers] = useState<Record<number, string>>({});
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const [enrollingCourseId, setEnrollingCourseId] = useState<number | null>(null);
+  const [completingPreReadId, setCompletingPreReadId] = useState<number | null>(null);
+  const [completedPreReadIds, setCompletedPreReadIds] = useState<number[]>([]);
+
+  const getNowOverrideHeaders = () => {
+    const override = localStorage.getItem("wisenet_time_override");
+    if (!override) return {};
+    return { "x-now-override": override };
+  };
 
   const fetchCourseScopedData = async (courseId: number) => {
     try {
-      const [sessionsRes, feedbackRes] = await Promise.all([
-        fetch(`/api/courses/${courseId}/sessions`),
-        fetch(`/api/courses/${courseId}/feedback/active`),
-      ]);
-      if (!sessionsRes.ok || !feedbackRes.ok) {
-        setError("Could not fetch session/feedback data for this course.");
+      const feedbackRes = await fetch(`/api/courses/${courseId}/feedback/active`, {
+        headers: getNowOverrideHeaders(),
+      });
+      if (!feedbackRes.ok) {
+        setError("Could not fetch feedback data for this course.");
         return;
       }
-      setSessions(await sessionsRes.json());
       setFeedbackForm(await feedbackRes.json());
     } catch (error) {
       console.error("Failed to fetch course scoped dashboard data", error);
-      setError("Could not fetch session/feedback data for this course.");
+      setError("Could not fetch feedback data for this course.");
+    }
+  };
+
+  const fetchTodos = async () => {
+    setLoadingTodos(true);
+    try {
+      const response = await fetch("/api/dashboard/todos", { headers: getNowOverrideHeaders() });
+      if (!response.ok) return;
+      const payload = (await response.json()) as TodoItem[];
+      setTodos(Array.isArray(payload) ? payload : []);
+    } catch {
+      setTodos([]);
+    } finally {
+      setLoadingTodos(false);
     }
   };
 
@@ -57,7 +88,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
         await fetchCourseScopedData(enrolledCourses[0].id);
       } else {
         setSelectedCourseId(null);
-        setSessions([]);
         setFeedbackForm(null);
       }
 
@@ -67,6 +97,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
       } else {
         setAvailableCourses([]);
       }
+      await fetchTodos();
     } catch (fetchError) {
       console.error("Failed to fetch courses", fetchError);
       setError("Could not load dashboard data.");
@@ -79,14 +110,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
     fetchDashboardData();
   }, []);
 
-  const selectedCourse = useMemo(
-    () => courses.find((course) => course.id === selectedCourseId) || null,
-    [courses, selectedCourseId]
-  );
+  useEffect(() => {
+    const onTimeOverrideUpdated = () => {
+      fetchDashboardData();
+      if (selectedCourseId) {
+        fetchCourseScopedData(selectedCourseId);
+      }
+    };
+    window.addEventListener("wisenet-time-override-updated", onTimeOverrideUpdated);
+    return () => window.removeEventListener("wisenet-time-override-updated", onTimeOverrideUpdated);
+  }, [selectedCourseId]);
 
-  const onSelectCourse = async (courseId: number) => {
-    setSelectedCourseId(courseId);
-    await fetchCourseScopedData(courseId);
+  const getSessionPreview = (course: Course): CourseSession[] => {
+    const raw = (course as any).session_preview;
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw as CourseSession[];
+    try {
+      const parsed = JSON.parse(String(raw));
+      return Array.isArray(parsed) ? (parsed as CourseSession[]) : [];
+    } catch {
+      return [];
+    }
   };
 
   const submitFeedback = async () => {
@@ -109,11 +153,12 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
     try {
       const response = await fetch(`/api/courses/${selectedCourseId}/feedback/submit`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getNowOverrideHeaders() },
         body: JSON.stringify({ form_id: feedbackForm.form_id, answers }),
       });
       if (response.ok) {
         await fetchCourseScopedData(selectedCourseId);
+        await fetchTodos();
         setFeedbackAnswers({});
       } else {
         const payload = await response.json().catch(() => ({ error: "Failed to submit feedback." }));
@@ -141,6 +186,40 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
       setError("Could not enroll in this course.");
     } finally {
       setEnrollingCourseId(null);
+    }
+  };
+
+  const openTodoItem = async (item: TodoItem) => {
+    if (item.task_type === "pre_read" || item.task_type === "feedback") {
+      onOpenCourse?.(item.course_id);
+      return;
+    }
+    setSelectedCourseId(item.course_id);
+    await fetchCourseScopedData(item.course_id);
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
+  };
+
+  const markPreReadCompleted = async (materialId: number) => {
+    setCompletingPreReadId(materialId);
+    setError("");
+    try {
+      const response = await fetch(`/api/materials/${materialId}/progress/read`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: "Could not update pre-read status." }));
+        setError(payload.error || "Could not update pre-read status.");
+        return;
+      }
+      setCompletedPreReadIds((prev) => [...new Set([...prev, materialId])]);
+      window.setTimeout(async () => {
+        await fetchTodos();
+        setCompletedPreReadIds((prev) => prev.filter((id) => id !== materialId));
+      }, 900);
+    } catch {
+      setError("Could not update pre-read status.");
+    } finally {
+      setCompletingPreReadId(null);
     }
   };
 
@@ -172,6 +251,80 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
           </button>
         </div>
       ) : null}
+
+      <div className="moodle-card p-5">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h3 className="text-lg font-bold text-slate-800">To-do</h3>
+          {loadingTodos ? <Loader2 size={16} className="animate-spin text-moodle-blue" /> : null}
+        </div>
+        {todos.length === 0 ? (
+          <p className="text-sm text-slate-500 italic">No pending tasks right now.</p>
+        ) : (
+          <div className="space-y-2">
+            {todos.slice(0, 8).map((item) => {
+              const isCompleted = completedPreReadIds.includes(item.item_id) && item.task_type === "pre_read";
+              return (
+              <div
+                key={`${item.task_type}-${item.item_id}`}
+                className={`border rounded p-3 cursor-pointer transition-colors ${
+                  isCompleted ? "border-emerald-200 bg-emerald-50" : "border-slate-200 hover:bg-slate-50"
+                }`}
+                onClick={() => openTodoItem(item)}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold text-slate-800">{item.item_title}</p>
+                  <span
+                    className={`text-[10px] px-2 py-1 rounded-full font-bold uppercase tracking-wide ${
+                      isCompleted
+                        ? "bg-emerald-100 text-emerald-700"
+                        : item.task_type === "feedback"
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-blue-100 text-blue-700"
+                    }`}
+                  >
+                    {isCompleted ? "Completed" : item.task_type === "feedback" ? "Feedback" : "Pre-read"}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-1">
+                  {item.course_code} • {item.course_name} • {item.section_title}
+                </p>
+                <p className="text-xs text-slate-600 mt-1">
+                  {isCompleted
+                    ? "Completed. This item will disappear from to-do."
+                    : `Due by: ${new Date(item.due_at).toLocaleString()}`}
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openTodoItem(item);
+                    }}
+                    className="px-2.5 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 hover:bg-white"
+                  >
+                    {item.task_type === "feedback" ? "Open feedback" : "Open pre-read"}
+                  </button>
+                  {item.task_type === "pre_read" ? (
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        markPreReadCompleted(item.item_id);
+                      }}
+                      disabled={isCompleted || completingPreReadId === item.item_id}
+                      className="px-2.5 py-1.5 bg-slate-900 text-white rounded text-xs font-bold disabled:opacity-70"
+                    >
+                      {isCompleted
+                        ? "Completed"
+                        : completingPreReadId === item.item_id
+                          ? "Saving..."
+                          : "Mark completed"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            )})}
+          </div>
+        )}
+      </div>
 
       {courses.length === 0 ? (
         <div className="moodle-card p-10 text-center">
@@ -216,6 +369,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
                     />
                   </div>
                 </div>
+
+                <div className="mt-4 border-t border-slate-100 pt-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Course Calendar</p>
+                  {getSessionPreview(course).length === 0 ? (
+                    <p className="text-xs text-slate-500">No sessions scheduled yet.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {getSessionPreview(course)
+                        .slice(0, 3)
+                        .map((session) => (
+                          <div key={session.id} className="text-xs text-slate-700 flex items-center justify-between">
+                            <span className="font-semibold">S{session.session_number}</span>
+                            <span className="truncate ml-2">{session.title}</span>
+                            <span className="text-slate-500 ml-2">
+                              {new Date(session.session_date).toLocaleDateString()}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </button>
           ))}
@@ -233,6 +407,26 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
                 </p>
                 <h4 className="text-lg font-bold text-slate-800">{course.name}</h4>
                 <p className="text-sm text-slate-500 mt-1">{course.instructor}</p>
+                <div className="mt-3 border-t border-slate-100 pt-3">
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Course Calendar</p>
+                  {getSessionPreview(course).length === 0 ? (
+                    <p className="text-xs text-slate-500">No sessions scheduled yet.</p>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {getSessionPreview(course)
+                        .slice(0, 3)
+                        .map((session) => (
+                          <div key={session.id} className="text-xs text-slate-700 flex items-center justify-between">
+                            <span className="font-semibold">S{session.session_number}</span>
+                            <span className="truncate ml-2">{session.title}</span>
+                            <span className="text-slate-500 ml-2">
+                              {new Date(session.session_date).toLocaleDateString()}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => enrollInCourse(course.id)}
                   disabled={enrollingCourseId === course.id}
@@ -245,26 +439,6 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
           </div>
         </div>
       ) : null}
-
-      {courses.length > 0 && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <h3 className="text-xl font-bold text-slate-800">Timetable and Calendar</h3>
-            <select
-              className="border border-slate-300 rounded px-3 py-2 text-sm"
-              value={selectedCourseId || ""}
-              onChange={(e) => onSelectCourse(Number(e.target.value))}
-            >
-              {courses.map((course) => (
-                <option key={course.id} value={course.id}>
-                  {course.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <ScheduleBoard sessions={sessions} title={selectedCourse?.name || "Course"} />
-        </div>
-      )}
 
       {feedbackForm && !feedbackForm.already_submitted && (
         <div className="moodle-card p-6 border border-amber-200 bg-amber-50/40">

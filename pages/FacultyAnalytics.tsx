@@ -1,7 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Loader2, PlusCircle, Trophy, Users, BarChart3, MessageSquareText } from "lucide-react";
-import ScheduleBoard from "../components/ScheduleBoard";
-import { Course, CourseSession } from "../types";
+import React, { useEffect, useState } from "react";
+import { Loader2, Trophy, Users, BarChart3, MessageSquareText } from "lucide-react";
+import { Course } from "../types";
 
 const FacultyAnalytics: React.FC = () => {
   const [courses, setCourses] = useState<Course[]>([]);
@@ -10,40 +9,23 @@ const FacultyAnalytics: React.FC = () => {
   const [quizAnalytics, setQuizAnalytics] = useState<any | null>(null);
   const [preReadAnalytics, setPreReadAnalytics] = useState<any | null>(null);
   const [feedbackAnalytics, setFeedbackAnalytics] = useState<any | null>(null);
-  const [sessions, setSessions] = useState<CourseSession[]>([]);
   const [loading, setLoading] = useState(true);
-  const [addingSession, setAddingSession] = useState(false);
   const [error, setError] = useState("");
 
-  const [sessionForm, setSessionForm] = useState({
-    title: "",
-    session_date: "",
-    start_time: "09:00",
-    end_time: "10:30",
-    mode: "classroom",
-  });
-
-  const selectedCourse = useMemo(
-    () => courses.find((course) => course.id === selectedCourseId) || null,
-    [courses, selectedCourseId]
-  );
-
   const fetchCourseAnalytics = async (courseId: number) => {
-    const [reportsRes, quizAnalyticsRes, sessionsRes, feedbackRes, preReadRes] = await Promise.all([
+    const [reportsRes, quizAnalyticsRes, feedbackRes, preReadRes] = await Promise.all([
       fetch(`/api/courses/${courseId}/quiz-reports`),
       fetch(`/api/courses/${courseId}/quiz-analytics`),
-      fetch(`/api/courses/${courseId}/sessions`),
       fetch(`/api/courses/${courseId}/feedback/analytics`),
       fetch(`/api/courses/${courseId}/pre-read-analytics`),
     ]);
 
-    if (!reportsRes.ok || !quizAnalyticsRes.ok || !sessionsRes.ok || !feedbackRes.ok || !preReadRes.ok) {
+    if (!reportsRes.ok || !quizAnalyticsRes.ok || !feedbackRes.ok || !preReadRes.ok) {
       throw new Error("Failed to load analytics.");
     }
 
     setQuizReports(await reportsRes.json());
     setQuizAnalytics(await quizAnalyticsRes.json());
-    setSessions(await sessionsRes.json());
     setFeedbackAnalytics(await feedbackRes.json());
     setPreReadAnalytics(await preReadRes.json());
   };
@@ -86,36 +68,6 @@ const FacultyAnalytics: React.FC = () => {
     }
   };
 
-  const addSession = async () => {
-    if (!selectedCourseId || !sessionForm.title || !sessionForm.session_date) return;
-    setAddingSession(true);
-    setError("");
-    try {
-      const response = await fetch(`/api/courses/${selectedCourseId}/sessions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(sessionForm),
-      });
-      if (response.ok) {
-        setSessionForm({
-          title: "",
-          session_date: "",
-          start_time: "09:00",
-          end_time: "10:30",
-          mode: "classroom",
-        });
-        await fetchCourseAnalytics(selectedCourseId);
-      } else {
-        const payload = await response.json().catch(() => ({ error: "Failed to add session." }));
-        setError(payload.error || "Failed to add session.");
-      }
-    } catch {
-      setError("Failed to add session.");
-    } finally {
-      setAddingSession(false);
-    }
-  };
-
   const latestFeedbackForm = feedbackAnalytics?.forms?.[0];
 
   return (
@@ -124,7 +76,7 @@ const FacultyAnalytics: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold text-slate-800">Faculty Analytics and Class Health</h2>
           <p className="text-slate-500 text-sm mt-1">
-            Track quiz performance, session schedule, and anonymous feedback insights.
+            Track quiz performance, pre-read completion, and anonymous feedback insights.
           </p>
         </div>
         <select
@@ -174,44 +126,10 @@ const FacultyAnalytics: React.FC = () => {
             </div>
           </div>
 
-          <div className="moodle-card p-6 space-y-4">
-            <h3 className="text-lg font-bold text-slate-800">Add Session (Auto feedback trigger at Session 4)</h3>
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-              <input
-                placeholder="Session title"
-                className="border border-slate-300 rounded px-3 py-2 text-sm md:col-span-2"
-                value={sessionForm.title}
-                onChange={(e) => setSessionForm((prev) => ({ ...prev, title: e.target.value }))}
-              />
-              <input
-                type="date"
-                className="border border-slate-300 rounded px-3 py-2 text-sm"
-                value={sessionForm.session_date}
-                onChange={(e) => setSessionForm((prev) => ({ ...prev, session_date: e.target.value }))}
-              />
-              <input
-                type="time"
-                className="border border-slate-300 rounded px-3 py-2 text-sm"
-                value={sessionForm.start_time}
-                onChange={(e) => setSessionForm((prev) => ({ ...prev, start_time: e.target.value }))}
-              />
-              <input
-                type="time"
-                className="border border-slate-300 rounded px-3 py-2 text-sm"
-                value={sessionForm.end_time}
-                onChange={(e) => setSessionForm((prev) => ({ ...prev, end_time: e.target.value }))}
-              />
-            </div>
-            <button
-              onClick={addSession}
-              disabled={addingSession}
-              className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black disabled:opacity-70 inline-flex items-center gap-2"
-            >
-              <PlusCircle size={16} /> {addingSession ? "Adding..." : "Add Session"}
-            </button>
+          <div className="moodle-card p-4 text-sm text-slate-600">
+            Session calendar and timetable are now shown inside each course card in <span className="font-bold">My Courses</span>.
+            Edit session dates from that course page.
           </div>
-
-          <ScheduleBoard sessions={sessions} title={selectedCourse?.name || "Course"} />
 
           <div className="moodle-card p-6 overflow-x-auto">
             <h3 className="text-lg font-bold text-slate-800 mb-4">Pre-read Completion Tracking</h3>

@@ -71,7 +71,7 @@ async function ensureSchema() {
       category_id INTEGER REFERENCES categories(id),
       instructor TEXT,
       created_by INTEGER REFERENCES users(id),
-      credits INTEGER,
+      credits INTEGER DEFAULT 1,
       description TEXT,
       image_url TEXT,
       start_date TIMESTAMPTZ,
@@ -117,7 +117,8 @@ async function ensureSchema() {
       course_id INTEGER PRIMARY KEY REFERENCES courses(id),
       faculty_info TEXT,
       teaching_assistant TEXT,
-      credits INTEGER DEFAULT 2,
+      credits INTEGER DEFAULT 1,
+      feedback_trigger_session INTEGER DEFAULT 4,
       learning_outcomes JSONB DEFAULT '[]'::jsonb,
       evaluation_components JSONB DEFAULT '[]'::jsonb
     );
@@ -136,6 +137,7 @@ async function ensureSchema() {
       key_takeaways JSONB DEFAULT '[]'::jsonb,
       is_assigned BOOLEAN NOT NULL DEFAULT FALSE,
       assigned_at TIMESTAMPTZ,
+      due_at TIMESTAMPTZ,
       created_by INTEGER REFERENCES users(id),
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
@@ -203,6 +205,18 @@ async function ensureSchema() {
       UNIQUE (form_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS feedback_insights (
+      id SERIAL PRIMARY KEY,
+      form_id INTEGER UNIQUE REFERENCES feedback_forms(id) ON DELETE CASCADE,
+      course_id INTEGER REFERENCES courses(id),
+      submissions_count INTEGER NOT NULL DEFAULT 0,
+      summary_text TEXT NOT NULL DEFAULT '',
+      metrics_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      text_comments_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      generated_at TIMESTAMPTZ DEFAULT NOW(),
+      viewed_at TIMESTAMPTZ
+    );
+
     CREATE TABLE IF NOT EXISTS material_learning_progress (
       material_id INTEGER REFERENCES course_materials(id) ON DELETE CASCADE,
       user_id INTEGER REFERENCES users(id),
@@ -218,10 +232,33 @@ async function ensureSchema() {
 
   await execute(`
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id);
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS credits INTEGER DEFAULT 1;
+    ALTER TABLE courses ALTER COLUMN credits SET DEFAULT 1;
+    UPDATE courses SET credits = 1 WHERE credits IS NULL OR credits <= 0;
+    ALTER TABLE course_details ADD COLUMN IF NOT EXISTS credits INTEGER DEFAULT 1;
+    ALTER TABLE course_details ALTER COLUMN credits SET DEFAULT 1;
+    UPDATE course_details SET credits = 1 WHERE credits IS NULL OR credits <= 0;
+    ALTER TABLE course_details ADD COLUMN IF NOT EXISTS feedback_trigger_session INTEGER DEFAULT 4;
+    ALTER TABLE course_details ALTER COLUMN feedback_trigger_session SET DEFAULT 4;
+    UPDATE course_details
+    SET feedback_trigger_session = 4
+    WHERE feedback_trigger_session IS NULL OR feedback_trigger_session <= 0;
     ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS source_file_name TEXT;
     ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS source_file_base64 TEXT;
     ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS is_assigned BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ;
+    ALTER TABLE course_materials ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
+    UPDATE course_materials
+    SET due_at = COALESCE(assigned_at, NOW()) + INTERVAL '2 day'
+    WHERE is_assigned = TRUE AND due_at IS NULL;
+    ALTER TABLE feedback_insights ADD COLUMN IF NOT EXISTS submissions_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE feedback_insights ADD COLUMN IF NOT EXISTS summary_text TEXT NOT NULL DEFAULT '';
+    ALTER TABLE feedback_insights ADD COLUMN IF NOT EXISTS metrics_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE feedback_insights ADD COLUMN IF NOT EXISTS text_comments_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE feedback_insights ADD COLUMN IF NOT EXISTS generated_at TIMESTAMPTZ DEFAULT NOW();
+    ALTER TABLE feedback_insights ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_feedback_forms_due_at ON feedback_forms (due_at);
+    CREATE INDEX IF NOT EXISTS idx_feedback_insights_course_viewed ON feedback_insights (course_id, viewed_at);
   `);
 }
 
@@ -265,187 +302,18 @@ async function ensureUsers(client: PoolClient) {
 async function ensureDefaultCourseSetup(client: PoolClient) {
   const cat1Id = await getOrCreateCategory(client, "PGDM(BM)", null);
   const cat2Id = await getOrCreateCategory(client, "PGDM(BM) 2025-2027", cat1Id);
-  const cat3Id = await getOrCreateCategory(client, "PGDM (BM) 2025-27 - Term II", cat2Id);
-  const defaultFaculty = await client.query<{ id: number }>(
-    "SELECT id FROM users WHERE role = 'faculty' ORDER BY id ASC LIMIT 1"
-  );
-  const defaultFacultyId = defaultFaculty.rows[0]?.id || null;
+  await getOrCreateCategory(client, "PGDM (BM) 2025-27 - Term II", cat2Id);
 
-  if (defaultFacultyId) {
-    await client.query(
-      `
-        UPDATE courses
-        SET created_by = $1
-        WHERE created_by IS NULL
-      `,
-      [defaultFacultyId]
-    );
-  }
-
-  const existingCourse = await client.query<{ id: number }>(
-    "SELECT id FROM courses WHERE code = 'DIG501' LIMIT 1"
-  );
-
-  let digCourseId = existingCourse.rows[0]?.id;
-  if (!digCourseId) {
-    const created = await client.query<{ id: number }>(
-      `INSERT INTO courses (name, code, category_id, instructor, created_by, credits, description, start_date, end_date, visibility)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'show')
-       RETURNING id`,
-      [
-        "Business in Digital Age",
-        "DIG501",
-        cat3Id,
-        "Prof. Ashish Desai, Prof. Abhishek Jha, Prof. Dhruven Zalal",
-        defaultFacultyId,
-        2,
-        "Core concepts, systems and frameworks for digital transformation in B2B and B2C contexts.",
-        "2025-06-01T00:00:00Z",
-        "2026-05-31T23:59:59Z",
-      ]
-    );
-    digCourseId = created.rows[0].id;
-  } else {
-    await client.query(
-      `UPDATE courses
-       SET name = $1, category_id = $2, instructor = $3, credits = $4, visibility = 'show', created_by = COALESCE(created_by, $5)
-       WHERE id = $6`,
-      [
-        "Business in Digital Age",
-        cat3Id,
-        "Prof. Ashish Desai, Prof. Abhishek Jha, Prof. Dhruven Zalal",
-        2,
-        defaultFacultyId,
-        digCourseId,
-      ]
-    );
-  }
-
-  const sectionNames = [
-    "Course Information",
-    "Topic 1",
-    "Topic 2",
-    "Evaluations and Submissions",
-  ];
-  for (const [idx, sectionName] of sectionNames.entries()) {
-    const section = await client.query<{ id: number }>(
-      'SELECT id FROM sections WHERE course_id = $1 AND title = $2 LIMIT 1',
-      [digCourseId, sectionName]
-    );
-    if (section.rows[0]) {
-      await client.query(
-        'UPDATE sections SET "order" = $1 WHERE id = $2',
-        [idx, section.rows[0].id]
-      );
-    } else {
-      await client.query(
-        'INSERT INTO sections (course_id, title, "order") VALUES ($1, $2, $3)',
-        [digCourseId, sectionName, idx]
-      );
-    }
-  }
-
-  const existingAnnouncement = await client.query(
-    `SELECT id FROM activities
-     WHERE course_id = $1 AND title = 'Announcements'
-     LIMIT 1`,
-    [digCourseId]
-  );
-  if (!existingAnnouncement.rows[0]) {
-    const courseInfoSection = await client.query<{ id: number }>(
-      'SELECT id FROM sections WHERE course_id = $1 AND title = $2 LIMIT 1',
-      [digCourseId, "Course Information"]
-    );
-    await client.query(
-      `INSERT INTO activities (section_id, course_id, title, type, due_date, description, content)
-       VALUES ($1, $2, $3, $4, NULL, $5, $6)`,
-      [
-        courseInfoSection.rows[0].id,
-        digCourseId,
-        "Announcements",
-        "forum",
-        "Faculty announcements and session updates.",
-        "Use this discussion to share class-level announcements.",
-      ]
-    );
-  }
-
-  const existingSessions = await client.query<{ count: number }>(
-    "SELECT COUNT(*)::int AS count FROM course_sessions WHERE course_id = $1",
-    [digCourseId]
-  );
-  if ((existingSessions.rows[0]?.count ?? 0) === 0) {
-    await client.query(
-      `
-        INSERT INTO course_sessions
-          (course_id, session_number, title, session_date, start_time, end_time, mode)
-        VALUES
-          ($1, 1, 'Session 1: Digital Strategy Foundations', CURRENT_DATE + INTERVAL '1 day', '09:00', '10:30', 'classroom'),
-          ($1, 2, 'Session 2: Platforms and Ecosystems', CURRENT_DATE + INTERVAL '3 day', '09:00', '10:30', 'classroom'),
-          ($1, 3, 'Session 3: Data and AI in Business', CURRENT_DATE + INTERVAL '5 day', '09:00', '10:30', 'classroom'),
-          ($1, 4, 'Session 4: India Stack and DPI', CURRENT_DATE + INTERVAL '7 day', '09:00', '10:30', 'classroom'),
-          ($1, 5, 'Session 5: Payments and Trust', CURRENT_DATE + INTERVAL '9 day', '09:00', '10:30', 'classroom'),
-          ($1, 6, 'Session 6: Scalable Digital Operations', CURRENT_DATE + INTERVAL '11 day', '09:00', '10:30', 'classroom')
-      `,
-      [digCourseId]
-    );
-  }
-
+  // Hide legacy seeded default course from faculty/student "My courses".
   await client.query(
     `
-      INSERT INTO course_details (course_id, faculty_info, teaching_assistant, credits, learning_outcomes, evaluation_components)
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
-      ON CONFLICT (course_id)
-      DO UPDATE SET
-        faculty_info = EXCLUDED.faculty_info,
-        teaching_assistant = EXCLUDED.teaching_assistant,
-        credits = EXCLUDED.credits,
-        learning_outcomes = EXCLUDED.learning_outcomes,
-        evaluation_components = EXCLUDED.evaluation_components
-    `,
-    [
-      digCourseId,
-      "Prof. Ashish Desai, Prof. Abhishek Jha, Prof. Dhruven Zalal",
-      "Khushbu Gandhi",
-      2,
-      JSON.stringify([
-        "Demonstrate a comprehensive understanding of key technology concepts, frameworks, and enterprise systems.",
-        "Apply these concepts and systems to drive digital transformation initiatives across B2B and B2C contexts.",
-        "Critically assess the implications of India Stack, digital public infrastructure, payment technologies, AI, and analytics for creating contemporary, innovative, and competitive business solutions.",
-        "Integrate course learnings to address disruptive growth opportunities, ethical considerations, societal impacts, and sustainability challenges in technology-driven business environments.",
-      ]),
-      JSON.stringify([
-        {
-          sr_no: 1,
-          component: "Class Participation (In class - Surprise Quizzes)",
-          code: "INF501-PBM-04-I01",
-          weightage_percent: 30,
-          timeline: "All",
-          scheduled_date: "",
-          clos_mapped: "All",
-        },
-        {
-          sr_no: 2,
-          component: "Group Exam",
-          code: "INF501-PBM-04-G01",
-          weightage_percent: 40,
-          timeline: "Session 1",
-          scheduled_date: "Lecture 17-18",
-          clos_mapped: "All",
-        },
-        {
-          sr_no: 3,
-          component: "End Term",
-          code: "INF501-PBM-04-I02",
-          weightage_percent: 30,
-          timeline: "Post Session 18",
-          scheduled_date: "Exam Week",
-          clos_mapped: "All",
-        },
-      ]),
-    ]
+      UPDATE courses
+      SET created_by = NULL,
+          visibility = 'hide'
+      WHERE code = 'DIG501'
+        AND instructor = 'Prof. Ashish Desai, Prof. Abhishek Jha, Prof. Dhruven Zalal'
+    `
   );
-
 }
 
 let initialized = false;

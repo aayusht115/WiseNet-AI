@@ -62,43 +62,31 @@ const STOPWORDS = new Set([
 const DEFAULT_FEEDBACK_QUESTIONS = [
   {
     question_order: 1,
-    question_text: "How clear was the session content?",
+    question_text: "How clear were the concepts covered in this course so far?",
     question_type: "mcq",
-    options: ["Very unclear", "Unclear", "Neutral", "Clear", "Very clear"],
+    options: ["Very unclear", "Unclear", "Somewhat clear", "Clear", "Very clear"],
   },
   {
     question_order: 2,
-    question_text: "How relevant was this session to your learning goals?",
-    question_type: "mcq",
-    options: ["Not relevant", "Slightly relevant", "Moderately relevant", "Relevant", "Highly relevant"],
-  },
-  {
-    question_order: 3,
-    question_text: "How useful was the reading material and quiz?",
+    question_text: "How useful were the assigned pre-reads and in-class discussions in building your understanding?",
     question_type: "mcq",
     options: ["Not useful", "Slightly useful", "Moderately useful", "Useful", "Very useful"],
   },
   {
+    question_order: 3,
+    question_text: "How confident are you in applying the core concepts to a real business problem?",
+    question_type: "mcq",
+    options: ["Not confident", "Slightly confident", "Somewhat confident", "Confident", "Very confident"],
+  },
+  {
     question_order: 4,
-    question_text: "How manageable was the workload pace so far?",
-    question_type: "mcq",
-    options: ["Too heavy", "Heavy", "Balanced", "Light", "Too light"],
-  },
-  {
-    question_order: 5,
-    question_text: "How confident are you in applying concepts from the first four sessions?",
-    question_type: "mcq",
-    options: ["Not confident", "Slightly confident", "Moderately confident", "Confident", "Very confident"],
-  },
-  {
-    question_order: 6,
-    question_text: "What is working well in this course so far?",
+    question_text: "What is one specific thing faculty can improve in upcoming sessions?",
     question_type: "text",
     options: [],
   },
   {
-    question_order: 7,
-    question_text: "What should the faculty improve for upcoming sessions?",
+    question_order: 5,
+    question_text: "Any topic you struggled with? Briefly explain where you got stuck.",
     question_type: "text",
     options: [],
   },
@@ -141,6 +129,243 @@ function normalizeEvaluationComponents(value: any) {
       clos_mapped: String(row?.clos_mapped || ""),
     };
   });
+}
+
+function normalizeLearningOutcomes(value: any) {
+  const rows = safeJson(value, []);
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => String(row ?? "").trim())
+    .filter(Boolean);
+}
+
+function getEvaluationTotal(components: ReturnType<typeof normalizeEvaluationComponents>) {
+  return components.reduce((sum, row) => sum + (Number(row.weightage_percent) || 0), 0);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function normalizeCourseCredits(value: any) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 1;
+  if (parsed <= 1) return 1;
+  if (parsed >= 3) return 3;
+  return Math.round(parsed);
+}
+
+function sessionsRequiredForCredits(credits: number) {
+  return normalizeCourseCredits(credits) * 9;
+}
+
+function normalizeFeedbackTriggerSession(value: any, maxSessions: number) {
+  const fallback = Math.min(4, Math.max(1, maxSessions));
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.round(parsed);
+  if (rounded < 1) return 1;
+  if (rounded > maxSessions) return maxSessions;
+  return rounded;
+}
+
+function normalizeDateOnly(value: any): string | null {
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (match?.[1]) return match[1];
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
+function getNowOverride(req: any): string | null {
+  const raw = String(req.headers?.["x-now-override"] || "").trim();
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function parseDateOnly(value: string) {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function validateCourseWindow(startDate: string, endDate: string, credits: number): string | null {
+  const start = parseDateOnly(startDate);
+  const end = parseDateOnly(endDate);
+  if (!start || !end) {
+    return "Course start date and end date are required.";
+  }
+  if (end.getTime() < start.getTime()) {
+    return "Course end date must be on or after start date.";
+  }
+
+  const requiredSessions = sessionsRequiredForCredits(credits);
+  const inclusiveDays = Math.floor((end.getTime() - start.getTime()) / DAY_MS) + 1;
+  if (inclusiveDays < requiredSessions) {
+    return `For ${normalizeCourseCredits(credits)} credit(s), choose a date range with at least ${requiredSessions} days (inclusive) to schedule ${requiredSessions} sessions.`;
+  }
+
+  return null;
+}
+
+function buildSessionPlan(startDate: string, endDate: string, credits: number) {
+  const start = parseDateOnly(startDate);
+  const end = parseDateOnly(endDate);
+  if (!start || !end) return [];
+
+  const sessionCount = sessionsRequiredForCredits(credits);
+  const totalDays = Math.max(0, Math.floor((end.getTime() - start.getTime()) / DAY_MS));
+  const offsets: number[] = [];
+
+  for (let i = 0; i < sessionCount; i += 1) {
+    if (sessionCount === 1) {
+      offsets.push(0);
+      continue;
+    }
+    const remaining = sessionCount - i - 1;
+    const minOffset = i === 0 ? 0 : offsets[i - 1] + 1;
+    const maxOffset = totalDays - remaining;
+    const target = Math.round((i * totalDays) / (sessionCount - 1));
+    offsets.push(Math.min(maxOffset, Math.max(minOffset, target)));
+  }
+
+  return offsets.map((offset, idx) => {
+    const date = new Date(start.getTime() + offset * DAY_MS);
+    return {
+      session_number: idx + 1,
+      title: `Session ${idx + 1}`,
+      session_date: date.toISOString().slice(0, 10),
+      start_time: "09:00",
+      end_time: "10:30",
+      mode: "classroom",
+    };
+  });
+}
+
+function normalizeSessionPayload(
+  value: any,
+  startDate: string,
+  endDate: string,
+  credits: number
+): { sessions: ReturnType<typeof buildSessionPlan>; error: string | null } {
+  const expectedSessions = sessionsRequiredForCredits(credits);
+  const raw = safeJson(value, []);
+  const rows = Array.isArray(raw) && raw.length > 0 ? raw : buildSessionPlan(startDate, endDate, credits);
+
+  if (rows.length !== expectedSessions) {
+    return {
+      sessions: [],
+      error: `This course requires exactly ${expectedSessions} sessions for ${normalizeCourseCredits(
+        credits
+      )} credit(s).`,
+    };
+  }
+
+  const normalized = rows.map((row: any, idx: number) => {
+    const normalizedDate = normalizeDateOnly(row?.session_date);
+    return {
+      session_number: Number(row?.session_number) || idx + 1,
+      title: String(row?.title || `Session ${idx + 1}`).trim() || `Session ${idx + 1}`,
+      session_date: normalizedDate || "",
+      start_time: row?.start_time ? String(row.start_time) : "09:00",
+      end_time: row?.end_time ? String(row.end_time) : "10:30",
+      mode: row?.mode ? String(row.mode) : "classroom",
+    };
+  });
+
+  if (normalized.some((row) => !row.session_date)) {
+    return { sessions: [], error: "Each session must have a valid date." };
+  }
+
+  normalized.sort((a, b) => {
+    if (a.session_date === b.session_date) return a.session_number - b.session_number;
+    return a.session_date.localeCompare(b.session_date);
+  });
+
+  for (const row of normalized) {
+    if (row.session_date < startDate || row.session_date > endDate) {
+      return {
+        sessions: [],
+        error: "All session dates must be within course start and end dates.",
+      };
+    }
+  }
+
+  return {
+    sessions: normalized.map((row, idx) => ({
+      ...row,
+      session_number: idx + 1,
+    })),
+    error: null,
+  };
+}
+
+async function replaceCourseSessions(
+  courseId: number,
+  sessions: ReturnType<typeof buildSessionPlan>,
+  userId: number
+) {
+  await execute("DELETE FROM course_sessions WHERE course_id = $1", [courseId]);
+  for (const row of sessions) {
+    await execute(
+      `
+        INSERT INTO course_sessions
+          (course_id, session_number, title, session_date, start_time, end_time, mode, created_by)
+        VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8)
+      `,
+      [
+        courseId,
+        row.session_number,
+        row.title,
+        row.session_date,
+        row.start_time || null,
+        row.end_time || null,
+        row.mode || "classroom",
+        userId,
+      ]
+    );
+  }
+}
+
+async function ensureMinimumCourseSessions(
+  courseId: number,
+  credits: number,
+  startDate: string,
+  endDate: string,
+  userId: number
+) {
+  const plan = buildSessionPlan(startDate, endDate, credits);
+  if (plan.length === 0) return;
+
+  const existing = await query<{ session_number: number }>(
+    "SELECT session_number FROM course_sessions WHERE course_id = $1",
+    [courseId]
+  );
+  const existingSet = new Set(existing.map((row) => Number(row.session_number)));
+
+  for (const item of plan) {
+    if (existingSet.has(item.session_number)) continue;
+    await execute(
+      `
+        INSERT INTO course_sessions
+          (course_id, session_number, title, session_date, start_time, end_time, mode, created_by)
+        VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8)
+      `,
+      [
+        courseId,
+        item.session_number,
+        item.title,
+        item.session_date,
+        item.start_time,
+        item.end_time,
+        item.mode,
+        userId,
+      ]
+    );
+  }
 }
 
 function extractLikelyPdfText(sourceFileBase64: string) {
@@ -370,7 +595,11 @@ async function canAccessCourse(user: any, courseId: number) {
   return Boolean(enrolled);
 }
 
-async function ensureCourseScaffold(courseId: number, facultyInfo: string | null = null) {
+async function ensureCourseScaffold(
+  courseId: number,
+  facultyInfo: string | null = null,
+  credits: number = 1
+) {
   const sectionNames = ["Course Information", "Topic 1", "Topic 2", "Evaluations and Submissions"];
   for (const [idx, sectionName] of sectionNames.entries()) {
     const section = await queryOne<{ id: number }>(
@@ -417,72 +646,392 @@ async function ensureCourseScaffold(courseId: number, facultyInfo: string | null
 
   await execute(
     `
-      INSERT INTO course_details (course_id, faculty_info, teaching_assistant, credits, learning_outcomes, evaluation_components)
-      VALUES ($1, $2, NULL, 2, '[]'::jsonb, '[]'::jsonb)
+      INSERT INTO course_details (
+        course_id,
+        faculty_info,
+        teaching_assistant,
+        credits,
+        feedback_trigger_session,
+        learning_outcomes,
+        evaluation_components
+      )
+      VALUES ($1, $2, NULL, $3, 4, '[]'::jsonb, '[]'::jsonb)
       ON CONFLICT (course_id)
       DO NOTHING
     `,
-    [courseId, facultyInfo]
+    [courseId, facultyInfo, normalizeCourseCredits(credits)]
   );
 }
 
 async function ensureFeedbackFormForCourse(courseId: number) {
-  const fourthSession = await queryOne<any>(
+  const course = await queryOne<{ credits: number }>("SELECT credits FROM courses WHERE id = $1", [courseId]);
+  const maxSessions = sessionsRequiredForCredits(Number(course?.credits || 1));
+  const details = await queryOne<{ feedback_trigger_session: number }>(
+    "SELECT feedback_trigger_session FROM course_details WHERE course_id = $1",
+    [courseId]
+  );
+  const triggerSessionNumber = normalizeFeedbackTriggerSession(
+    details?.feedback_trigger_session,
+    maxSessions
+  );
+
+  const triggerSession = await queryOne<any>(
     `
       SELECT session_number, session_date
       FROM course_sessions
-      WHERE course_id = $1 AND session_number = 4
+      WHERE course_id = $1 AND session_number = $2
       LIMIT 1
     `,
-    [courseId]
+    [courseId, triggerSessionNumber]
   );
-  if (!fourthSession) return null;
+  if (!triggerSession) return null;
 
   let form = await queryOne<any>(
     `
       SELECT id, course_id, trigger_session_number, open_at, due_at
       FROM feedback_forms
-      WHERE course_id = $1 AND trigger_session_number = 4
+      WHERE course_id = $1 AND trigger_session_number = $2
       LIMIT 1
     `,
-    [courseId]
+    [courseId, triggerSessionNumber]
   );
 
   if (!form) {
     form = await queryOne<any>(
       `
         INSERT INTO feedback_forms (course_id, trigger_session_number, open_at, due_at)
-        VALUES ($1, 4, ($2::date)::timestamptz, (($2::date)::timestamptz + INTERVAL '2 day'))
+        VALUES ($1, $2, ($3::date)::timestamptz, (($3::date)::timestamptz + INTERVAL '2 day'))
         RETURNING id, course_id, trigger_session_number, open_at, due_at
       `,
-      [courseId, fourthSession.session_date]
+      [courseId, triggerSessionNumber, triggerSession.session_date]
+    );
+  } else {
+    await execute(
+      `
+        UPDATE feedback_forms
+        SET open_at = ($2::date)::timestamptz,
+            due_at = (($2::date)::timestamptz + INTERVAL '2 day')
+        WHERE id = $1
+      `,
+      [form.id, triggerSession.session_date]
+    );
+    form = await queryOne<any>(
+      `
+        SELECT id, course_id, trigger_session_number, open_at, due_at
+        FROM feedback_forms
+        WHERE id = $1
+      `,
+      [form.id]
     );
   }
 
-  const existingQuestions = await queryOne<{ count: number }>(
-    "SELECT COUNT(*)::int AS count FROM feedback_questions WHERE form_id = $1",
-    [form?.id || 0]
-  );
+  if (form?.id) {
+    const submissions = await queryOne<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM feedback_submissions WHERE form_id = $1",
+      [form.id]
+    );
+    const existingQuestions = await query<any>(
+      `
+        SELECT question_order, question_text, question_type, options
+        FROM feedback_questions
+        WHERE form_id = $1
+        ORDER BY question_order ASC
+      `,
+      [form.id]
+    );
+    const hasExistingSubmissions = (submissions?.count ?? 0) > 0;
+    const needsQuestionSync =
+      existingQuestions.length !== DEFAULT_FEEDBACK_QUESTIONS.length ||
+      existingQuestions.some((existing, idx) => {
+        const target = DEFAULT_FEEDBACK_QUESTIONS[idx];
+        if (!target) return true;
+        if (Number(existing.question_order) !== Number(target.question_order)) return true;
+        if (String(existing.question_text || "").trim() !== target.question_text) return true;
+        if (String(existing.question_type || "").trim() !== target.question_type) return true;
+        return JSON.stringify(safeJson(existing.options, [])) !== JSON.stringify(target.options || []);
+      });
 
-  if ((existingQuestions?.count ?? 0) === 0 && form?.id) {
-    for (const question of DEFAULT_FEEDBACK_QUESTIONS) {
-      await execute(
-        `
-          INSERT INTO feedback_questions (form_id, question_order, question_text, question_type, options, required)
-          VALUES ($1, $2, $3, $4, $5::jsonb, TRUE)
-        `,
-        [
-          form.id,
-          question.question_order,
-          question.question_text,
-          question.question_type,
-          JSON.stringify(question.options || []),
-        ]
-      );
+    if (!hasExistingSubmissions && needsQuestionSync) {
+      await execute("DELETE FROM feedback_questions WHERE form_id = $1", [form.id]);
+      for (const question of DEFAULT_FEEDBACK_QUESTIONS) {
+        await execute(
+          `
+            INSERT INTO feedback_questions (form_id, question_order, question_text, question_type, options, required)
+            VALUES ($1, $2, $3, $4, $5::jsonb, TRUE)
+          `,
+          [
+            form.id,
+            question.question_order,
+            question.question_text,
+            question.question_type,
+            JSON.stringify(question.options || []),
+          ]
+        );
+      }
     }
   }
 
   return form;
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function clipText(value: string, maxLength = 180) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function buildThemeKeywords(comments: string[], limit = 4) {
+  const freq = new Map<string, number>();
+  for (const comment of comments) {
+    const tokens = comment
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4 && !STOPWORDS.has(token));
+    for (const token of tokens) {
+      freq.set(token, (freq.get(token) || 0) + 1);
+    }
+  }
+  return [...freq.entries()]
+    .sort((a, b) => {
+      if (b[1] === a[1]) return a[0].localeCompare(b[0]);
+      return b[1] - a[1];
+    })
+    .slice(0, limit)
+    .map(([token]) => token);
+}
+
+function buildTextFeedbackSummary(
+  submissionsCount: number,
+  mcqMetrics: Array<{ question_text: string; average: number; responses: number }>,
+  comments: string[]
+) {
+  if (submissionsCount <= 0) {
+    return "No student feedback submissions were received for this cycle.";
+  }
+
+  const parts: string[] = [];
+  parts.push(
+    `Collected ${submissionsCount} anonymous feedback submission${
+      submissionsCount === 1 ? "" : "s"
+    }.`
+  );
+
+  const scored = mcqMetrics.filter((metric) => metric.responses > 0);
+  if (scored.length > 0) {
+    const sorted = [...scored].sort((a, b) => b.average - a.average);
+    const strongest = sorted[0];
+    const weakest = sorted[sorted.length - 1];
+    parts.push(
+      `Highest-rated area: "${strongest.question_text}" (${strongest.average.toFixed(2)}/5).`
+    );
+    if (weakest.question_text !== strongest.question_text) {
+      parts.push(
+        `Lowest-rated area: "${weakest.question_text}" (${weakest.average.toFixed(2)}/5).`
+      );
+    }
+  }
+
+  if (comments.length > 0) {
+    const keywords = buildThemeKeywords(comments, 4);
+    if (keywords.length > 0) {
+      parts.push(`Common themes in comments: ${keywords.join(", ")}.`);
+    }
+    const sample = comments.slice(0, 2).map((comment) => `"${clipText(comment, 120)}"`).join(" ");
+    if (sample) {
+      parts.push(`Representative anonymous feedback: ${sample}`);
+    }
+  } else {
+    parts.push("No written comments were submitted.");
+  }
+
+  return parts.join(" ");
+}
+
+async function ensureFeedbackInsightForForm(formId: number, nowOverride: string | null = null) {
+  const form = await queryOne<{
+    id: number;
+    course_id: number;
+    trigger_session_number: number;
+    open_at: string;
+    due_at: string;
+  }>(
+    `
+      SELECT id, course_id, trigger_session_number, open_at, due_at
+      FROM feedback_forms
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [formId]
+  );
+  if (!form) return null;
+
+  const now = new Date(nowOverride || new Date().toISOString());
+  const dueAt = new Date(form.due_at);
+  if (Number.isNaN(now.getTime()) || Number.isNaN(dueAt.getTime()) || now.getTime() < dueAt.getTime()) {
+    return null;
+  }
+
+  const questions = await query<any>(
+    `
+      SELECT id, question_order, question_text, question_type, options
+      FROM feedback_questions
+      WHERE form_id = $1
+      ORDER BY question_order ASC
+    `,
+    [form.id]
+  );
+  const submissions = await query<{ answers: any }>(
+    `
+      SELECT answers
+      FROM feedback_submissions
+      WHERE form_id = $1
+      ORDER BY submitted_at ASC
+    `,
+    [form.id]
+  );
+
+  const piiRows = await query<{ name: string | null; email: string | null }>(
+    `
+      SELECT u.name, u.email
+      FROM users u
+      JOIN enrollments e ON e.user_id = u.id
+      WHERE e.course_id = $1 AND u.role = 'student'
+    `,
+    [form.course_id]
+  );
+  const piiTokens = [
+    ...new Set(
+      piiRows
+        .flatMap((row) => [row.name || "", row.email || ""])
+        .flatMap((value) => String(value).split(/\s+/))
+        .map((value) => value.trim())
+        .filter((value) => value.length >= 3)
+    ),
+  ];
+
+  const sanitizeComment = (value: string) => {
+    let sanitized = value;
+    for (const token of piiTokens) {
+      const pattern = new RegExp(`\\b${escapeRegex(token)}\\b`, "gi");
+      sanitized = sanitized.replace(pattern, "[redacted]");
+    }
+    return sanitized.replace(/\s+/g, " ").trim();
+  };
+
+  const parsedAnswerSets = submissions.map((submission) => safeJson(submission.answers, []));
+  const metrics: any[] = [];
+  const allTextComments: string[] = [];
+
+  for (const question of questions) {
+    if (String(question.question_type) === "mcq") {
+      const options = safeJson(question.options, []);
+      const choiceValues = parsedAnswerSets
+        .flatMap((answers: any[]) =>
+          answers
+            .filter((answer) => Number(answer?.question_id) === Number(question.id))
+            .map((answer) => Number(answer?.choice_value))
+        )
+        .filter((choice) => Number.isInteger(choice) && choice >= 1 && choice <= options.length);
+      const average =
+        choiceValues.length > 0
+          ? Number((choiceValues.reduce((sum, choice) => sum + choice, 0) / choiceValues.length).toFixed(2))
+          : 0;
+      const distribution = options.map((option: string, index: number) => {
+        const count = choiceValues.filter((choice) => choice === index + 1).length;
+        const percentage =
+          choiceValues.length > 0 ? Number(((count / choiceValues.length) * 100).toFixed(1)) : 0;
+        return {
+          option_index: index + 1,
+          option_text: String(option),
+          count,
+          percentage,
+        };
+      });
+      metrics.push({
+        question_id: Number(question.id),
+        question_order: Number(question.question_order),
+        question_text: String(question.question_text || ""),
+        question_type: "mcq",
+        responses: choiceValues.length,
+        average,
+        distribution,
+      });
+      continue;
+    }
+
+    const comments = parsedAnswerSets
+      .flatMap((answers: any[]) =>
+        answers
+          .filter((answer) => Number(answer?.question_id) === Number(question.id))
+          .map((answer) => sanitizeComment(String(answer?.answer_text || "")))
+      )
+      .filter(Boolean);
+
+    allTextComments.push(...comments);
+    metrics.push({
+      question_id: Number(question.id),
+      question_order: Number(question.question_order),
+      question_text: String(question.question_text || ""),
+      question_type: "text",
+      responses: comments.length,
+      highlights: comments.slice(0, 8),
+    });
+  }
+
+  const mcqMetrics = metrics
+    .filter((metric) => metric.question_type === "mcq")
+    .map((metric) => ({
+      question_text: String(metric.question_text || ""),
+      average: Number(metric.average || 0),
+      responses: Number(metric.responses || 0),
+    }));
+  const summaryText = buildTextFeedbackSummary(submissions.length, mcqMetrics, allTextComments);
+
+  await execute(
+    `
+      INSERT INTO feedback_insights (
+        form_id,
+        course_id,
+        submissions_count,
+        summary_text,
+        metrics_json,
+        text_comments_json,
+        generated_at
+      )
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, NOW())
+      ON CONFLICT (form_id)
+      DO UPDATE SET
+        submissions_count = EXCLUDED.submissions_count,
+        summary_text = EXCLUDED.summary_text,
+        metrics_json = EXCLUDED.metrics_json,
+        text_comments_json = EXCLUDED.text_comments_json,
+        generated_at = NOW()
+    `,
+    [
+      form.id,
+      form.course_id,
+      submissions.length,
+      summaryText,
+      JSON.stringify(metrics),
+      JSON.stringify(allTextComments.slice(0, 20)),
+    ]
+  );
+
+  return queryOne<any>(
+    `
+      SELECT *
+      FROM feedback_insights
+      WHERE form_id = $1
+      LIMIT 1
+    `,
+    [form.id]
+  );
 }
 
 async function startServer() {
@@ -578,12 +1127,87 @@ async function startServer() {
     res.json(activities);
   });
 
+  app.get("/api/dashboard/todos", authenticate, async (req: any, res) => {
+    if (req.user.role !== "student") return res.json([]);
+    const nowOverride = getNowOverride(req);
+
+    const enrolledCourseRows = await query<{ course_id: number }>(
+      "SELECT course_id FROM enrollments WHERE user_id = $1",
+      [req.user.id]
+    );
+    for (const row of enrolledCourseRows) {
+      const courseId = Number(row.course_id);
+      if (courseId > 0) {
+        await ensureFeedbackFormForCourse(courseId);
+      }
+    }
+
+    const todos = await query<any>(
+      `
+        SELECT *
+        FROM (
+          SELECT
+            'pre_read'::text AS task_type,
+            m.id AS item_id,
+            m.title AS item_title,
+            c.id AS course_id,
+            c.name AS course_name,
+            c.code AS course_code,
+            s.title AS section_title,
+            COALESCE(m.due_at, m.assigned_at + INTERVAL '2 day', m.created_at + INTERVAL '2 day') AS due_at
+          FROM course_materials m
+          JOIN sections s ON s.id = m.section_id
+          JOIN courses c ON c.id = m.course_id
+          JOIN enrollments e ON e.course_id = c.id AND e.user_id = $1
+          LEFT JOIN material_learning_progress p ON p.material_id = m.id AND p.user_id = $1
+          WHERE m.is_assigned = TRUE
+            AND COALESCE(p.quiz_completed_at, p.read_completed_at) IS NULL
+
+          UNION ALL
+
+          SELECT
+            'feedback'::text AS task_type,
+            f.id AS item_id,
+            'Anonymous Mid-course Feedback'::text AS item_title,
+            c.id AS course_id,
+            c.name AS course_name,
+            c.code AS course_code,
+            'Feedback'::text AS section_title,
+            f.due_at AS due_at
+          FROM feedback_forms f
+          JOIN courses c ON c.id = f.course_id
+          JOIN enrollments e ON e.course_id = c.id AND e.user_id = $1
+          LEFT JOIN feedback_submissions fs ON fs.form_id = f.id AND fs.user_id = $1
+          WHERE fs.id IS NULL
+            AND COALESCE($2::timestamptz, NOW()) >= f.open_at
+            AND COALESCE($2::timestamptz, NOW()) <= f.due_at
+        ) todo_rows
+        ORDER BY due_at ASC, course_name ASC
+      `,
+      [req.user.id, nowOverride]
+    );
+
+    res.json(todos);
+  });
+
   app.get("/api/courses/overview", authenticate, async (req: any, res) => {
     const courses =
       req.user.role === "faculty"
         ? await query(
             `
-              SELECT c.*, 0 as progress
+              SELECT
+                c.*,
+                0 as progress,
+                COALESCE((
+                  SELECT json_agg(sess ORDER BY sess.session_date ASC, sess.session_number ASC)
+                  FROM (
+                    SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
+                    FROM course_sessions
+                    WHERE course_id = c.id
+                    ORDER BY session_date ASC, session_number ASC
+                    LIMIT 9
+                  ) sess
+                ), '[]'::json) AS session_preview
               FROM courses c
               WHERE c.created_by = $1
               ORDER BY c.name ASC
@@ -592,7 +1216,19 @@ async function startServer() {
           )
         : await query(
             `
-              SELECT c.*, e.progress
+              SELECT
+                c.*,
+                e.progress,
+                COALESCE((
+                  SELECT json_agg(sess ORDER BY sess.session_date ASC, sess.session_number ASC)
+                  FROM (
+                    SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
+                    FROM course_sessions
+                    WHERE course_id = c.id
+                    ORDER BY session_date ASC, session_number ASC
+                    LIMIT 9
+                  ) sess
+                ), '[]'::json) AS session_preview
               FROM courses c
               JOIN enrollments e ON c.id = e.course_id
               WHERE e.user_id = $1
@@ -606,10 +1242,40 @@ async function startServer() {
   app.get("/api/courses", authenticate, async (req: any, res) => {
     const courses =
       req.user.role === "faculty"
-        ? await query("SELECT * FROM courses WHERE created_by = $1 ORDER BY name ASC", [req.user.id])
+        ? await query(
+            `
+              SELECT
+                c.*,
+                COALESCE((
+                  SELECT json_agg(sess ORDER BY sess.session_date ASC, sess.session_number ASC)
+                  FROM (
+                    SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
+                    FROM course_sessions
+                    WHERE course_id = c.id
+                    ORDER BY session_date ASC, session_number ASC
+                    LIMIT 9
+                  ) sess
+                ), '[]'::json) AS session_preview
+              FROM courses c
+              WHERE c.created_by = $1
+              ORDER BY c.name ASC
+            `,
+            [req.user.id]
+          )
         : await query(
             `
-              SELECT c.*
+              SELECT
+                c.*,
+                COALESCE((
+                  SELECT json_agg(sess ORDER BY sess.session_date ASC, sess.session_number ASC)
+                  FROM (
+                    SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
+                    FROM course_sessions
+                    WHERE course_id = c.id
+                    ORDER BY session_date ASC, session_number ASC
+                    LIMIT 9
+                  ) sess
+                ), '[]'::json) AS session_preview
               FROM courses c
               JOIN enrollments e ON e.course_id = c.id
               WHERE e.user_id = $1
@@ -628,7 +1294,17 @@ async function startServer() {
         SELECT
           c.*,
           COALESCE(e.progress, 0) AS progress,
-          CASE WHEN e.user_id IS NULL THEN FALSE ELSE TRUE END AS is_enrolled
+          CASE WHEN e.user_id IS NULL THEN FALSE ELSE TRUE END AS is_enrolled,
+          COALESCE((
+            SELECT json_agg(sess ORDER BY sess.session_date ASC, sess.session_number ASC)
+            FROM (
+              SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
+              FROM course_sessions
+              WHERE course_id = c.id
+              ORDER BY session_date ASC, session_number ASC
+              LIMIT 9
+            ) sess
+          ), '[]'::json) AS session_preview
         FROM courses c
         LEFT JOIN enrollments e
           ON e.course_id = c.id
@@ -664,10 +1340,54 @@ async function startServer() {
 
   app.post("/api/courses", authenticate, async (req: any, res) => {
     if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
-    const { name, code, description, start_date, end_date, visibility, instructor } = req.body || {};
+    const {
+      name,
+      code,
+      description,
+      start_date,
+      end_date,
+      visibility,
+      instructor,
+      credits,
+      image_url,
+      faculty_info,
+      teaching_assistant,
+      learning_outcomes,
+      evaluation_components,
+      feedback_trigger_session,
+      sessions,
+      enrolled_student_ids,
+    } = req.body || {};
     if (!String(name || "").trim() || !String(code || "").trim()) {
       return res.status(400).json({ error: "name and code are required" });
     }
+
+    const normalizedCredits = normalizeCourseCredits(credits);
+    const normalizedStart = normalizeDateOnly(start_date);
+    const normalizedEnd = normalizeDateOnly(end_date);
+    if (!normalizedStart || !normalizedEnd) {
+      return res.status(400).json({ error: "start_date and end_date are required" });
+    }
+    const dateWindowError = validateCourseWindow(normalizedStart, normalizedEnd, normalizedCredits);
+    if (dateWindowError) {
+      return res.status(400).json({ error: dateWindowError });
+    }
+    const normalizedEvaluation = normalizeEvaluationComponents(evaluation_components);
+    if (normalizedEvaluation.length > 0 && getEvaluationTotal(normalizedEvaluation) !== 100) {
+      return res.status(400).json({ error: "Evaluation weightages must add up to 100%." });
+    }
+    const normalizedOutcomes = normalizeLearningOutcomes(learning_outcomes);
+    const sessionPayload = normalizeSessionPayload(sessions, normalizedStart, normalizedEnd, normalizedCredits);
+    if (sessionPayload.error) {
+      return res.status(400).json({ error: sessionPayload.error });
+    }
+    const normalizedFeedbackTrigger = normalizeFeedbackTriggerSession(
+      feedback_trigger_session,
+      sessionsRequiredForCredits(normalizedCredits)
+    );
+    const normalizedStudentIds = Array.isArray(enrolled_student_ids)
+      ? [...new Set(enrolled_student_ids.map((id: any) => Number(id)).filter((id: number) => id > 0))]
+      : [];
 
     const existingCode = await queryOne(
       "SELECT id FROM courses WHERE LOWER(code) = LOWER($1) AND created_by = $2 LIMIT 1",
@@ -680,25 +1400,80 @@ async function startServer() {
     const created = await queryOne<{ id: number }>(
       `
         INSERT INTO courses
-          (name, code, description, start_date, end_date, visibility, instructor, created_by, credits)
+          (name, code, description, image_url, start_date, end_date, visibility, instructor, created_by, credits)
         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, 2)
+          ($1, $2, $3, $4, $5::date, $6::date, $7, $8, $9, $10)
         RETURNING id
       `,
       [
         String(name).trim(),
         String(code).trim(),
         description || null,
-        start_date || null,
-        end_date || null,
+        image_url ? String(image_url) : null,
+        normalizedStart,
+        normalizedEnd,
         visibility === "hide" ? "hide" : "show",
         String(instructor || req.user.name || "").trim() || "Faculty",
         req.user.id,
+        normalizedCredits,
       ]
     );
     if (!created?.id) return res.status(500).json({ error: "Failed to create course" });
 
-    await ensureCourseScaffold(created.id, String(instructor || req.user.name || "").trim() || null);
+    await ensureCourseScaffold(
+      created.id,
+      String(instructor || req.user.name || "").trim() || null,
+      normalizedCredits
+    );
+    await execute(
+      `
+        INSERT INTO course_details (
+          course_id,
+          faculty_info,
+          teaching_assistant,
+          credits,
+          feedback_trigger_session,
+          learning_outcomes,
+          evaluation_components
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+        ON CONFLICT (course_id)
+        DO UPDATE SET
+          faculty_info = EXCLUDED.faculty_info,
+          teaching_assistant = EXCLUDED.teaching_assistant,
+          credits = EXCLUDED.credits,
+          feedback_trigger_session = EXCLUDED.feedback_trigger_session,
+          learning_outcomes = EXCLUDED.learning_outcomes,
+          evaluation_components = EXCLUDED.evaluation_components
+      `,
+      [
+        created.id,
+        faculty_info ? String(faculty_info) : String(instructor || req.user.name || "").trim() || null,
+        teaching_assistant ? String(teaching_assistant) : null,
+        normalizedCredits,
+        normalizedFeedbackTrigger,
+        JSON.stringify(normalizedOutcomes),
+        JSON.stringify(normalizedEvaluation),
+      ]
+    );
+    await replaceCourseSessions(created.id, sessionPayload.sessions, req.user.id);
+    for (const studentId of normalizedStudentIds) {
+      const validStudent = await queryOne<{ id: number }>(
+        "SELECT id FROM users WHERE id = $1 AND role = 'student'",
+        [studentId]
+      );
+      if (!validStudent) continue;
+      await execute(
+        `
+          INSERT INTO enrollments (user_id, course_id, progress, last_accessed)
+          VALUES ($1, $2, 0, NOW())
+          ON CONFLICT (user_id, course_id)
+          DO NOTHING
+        `,
+        [studentId, created.id]
+      );
+    }
+    await ensureFeedbackFormForCourse(created.id);
     res.status(201).json({ success: true, id: created.id });
   });
 
@@ -717,15 +1492,167 @@ async function startServer() {
     if (!(await canManageCourse(req.user, courseId))) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    const { name, code, description, start_date, end_date, visibility, instructor } = req.body;
+    const existingCourse = await queryOne<any>("SELECT * FROM courses WHERE id = $1", [courseId]);
+    if (!existingCourse) return res.status(404).json({ error: "Course not found" });
+
+    const {
+      name,
+      code,
+      description,
+      start_date,
+      end_date,
+      visibility,
+      instructor,
+      credits,
+      image_url,
+      faculty_info,
+      teaching_assistant,
+      learning_outcomes,
+      evaluation_components,
+      feedback_trigger_session,
+      sessions,
+      enrolled_student_ids,
+    } = req.body || {};
+    const nextName = String(name ?? existingCourse.name ?? "").trim();
+    const nextCode = String(code ?? existingCourse.code ?? "").trim();
+    if (!nextName || !nextCode) {
+      return res.status(400).json({ error: "name and code are required" });
+    }
+
+    const normalizedCredits = normalizeCourseCredits(credits ?? existingCourse.credits);
+    const normalizedStart = normalizeDateOnly(start_date ?? existingCourse.start_date);
+    const normalizedEnd = normalizeDateOnly(end_date ?? existingCourse.end_date);
+    if (!normalizedStart || !normalizedEnd) {
+      return res.status(400).json({ error: "start_date and end_date are required" });
+    }
+    const dateWindowError = validateCourseWindow(normalizedStart, normalizedEnd, normalizedCredits);
+    if (dateWindowError) {
+      return res.status(400).json({ error: dateWindowError });
+    }
+    const existingDetails = await queryOne<any>("SELECT * FROM course_details WHERE course_id = $1", [courseId]);
+    const normalizedEvaluation = normalizeEvaluationComponents(
+      evaluation_components ?? existingDetails?.evaluation_components
+    );
+    if (normalizedEvaluation.length > 0 && getEvaluationTotal(normalizedEvaluation) !== 100) {
+      return res.status(400).json({ error: "Evaluation weightages must add up to 100%." });
+    }
+    const normalizedOutcomes = normalizeLearningOutcomes(
+      learning_outcomes ?? existingDetails?.learning_outcomes
+    );
+    const existingSessions = await query<any>(
+      `
+        SELECT session_number, title, session_date, start_time, end_time, mode
+        FROM course_sessions
+        WHERE course_id = $1
+        ORDER BY session_date ASC, session_number ASC
+      `,
+      [courseId]
+    );
+    const sessionPayload = normalizeSessionPayload(
+      sessions ?? existingSessions,
+      normalizedStart,
+      normalizedEnd,
+      normalizedCredits
+    );
+    if (sessionPayload.error) {
+      return res.status(400).json({ error: sessionPayload.error });
+    }
+    const normalizedFeedbackTrigger = normalizeFeedbackTriggerSession(
+      feedback_trigger_session ?? existingDetails?.feedback_trigger_session,
+      sessionsRequiredForCredits(normalizedCredits)
+    );
+    const normalizedStudentIds = Array.isArray(enrolled_student_ids)
+      ? [...new Set(enrolled_student_ids.map((id: any) => Number(id)).filter((id: number) => id > 0))]
+      : [];
+
+    const existingCode = await queryOne<{ id: number }>(
+      "SELECT id FROM courses WHERE LOWER(code) = LOWER($1) AND created_by = $2 AND id <> $3 LIMIT 1",
+      [nextCode, req.user.id, courseId]
+    );
+    if (existingCode) {
+      return res.status(400).json({ error: "You already have a course with this code" });
+    }
+
     await execute(
       `
         UPDATE courses
-        SET name = $1, code = $2, description = $3, start_date = $4, end_date = $5, visibility = $6, instructor = $7
-        WHERE id = $8
+        SET name = $1,
+            code = $2,
+            description = $3,
+            image_url = $4,
+            start_date = $5::date,
+            end_date = $6::date,
+            visibility = $7,
+            instructor = $8,
+            credits = $9
+        WHERE id = $10
       `,
-      [name, code, description, start_date, end_date, visibility, instructor || null, courseId]
+      [
+        nextName,
+        nextCode,
+        description ?? existingCourse.description ?? null,
+        image_url !== undefined ? (image_url ? String(image_url) : null) : existingCourse.image_url ?? null,
+        normalizedStart,
+        normalizedEnd,
+        visibility === "hide" ? "hide" : "show",
+        instructor ? String(instructor) : existingCourse.instructor || null,
+        normalizedCredits,
+        courseId,
+      ]
     );
+    await execute(
+      `
+        INSERT INTO course_details (
+          course_id,
+          faculty_info,
+          teaching_assistant,
+          credits,
+          feedback_trigger_session,
+          learning_outcomes,
+          evaluation_components
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+        ON CONFLICT (course_id)
+        DO UPDATE SET
+          faculty_info = EXCLUDED.faculty_info,
+          teaching_assistant = EXCLUDED.teaching_assistant,
+          credits = EXCLUDED.credits,
+          feedback_trigger_session = EXCLUDED.feedback_trigger_session,
+          learning_outcomes = EXCLUDED.learning_outcomes,
+          evaluation_components = EXCLUDED.evaluation_components
+      `,
+      [
+        courseId,
+        faculty_info !== undefined
+          ? String(faculty_info || "").trim() || null
+          : existingDetails?.faculty_info ?? null,
+        teaching_assistant !== undefined
+          ? String(teaching_assistant || "").trim() || null
+          : existingDetails?.teaching_assistant ?? null,
+        normalizedCredits,
+        normalizedFeedbackTrigger,
+        JSON.stringify(normalizedOutcomes),
+        JSON.stringify(normalizedEvaluation),
+      ]
+    );
+    await replaceCourseSessions(courseId, sessionPayload.sessions, req.user.id);
+    for (const studentId of normalizedStudentIds) {
+      const validStudent = await queryOne<{ id: number }>(
+        "SELECT id FROM users WHERE id = $1 AND role = 'student'",
+        [studentId]
+      );
+      if (!validStudent) continue;
+      await execute(
+        `
+          INSERT INTO enrollments (user_id, course_id, progress, last_accessed)
+          VALUES ($1, $2, 0, NOW())
+          ON CONFLICT (user_id, course_id)
+          DO NOTHING
+        `,
+        [studentId, courseId]
+      );
+    }
+    await ensureFeedbackFormForCourse(courseId);
     res.json({ success: true });
   });
 
@@ -751,7 +1678,7 @@ async function startServer() {
         SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
         FROM course_sessions
         WHERE course_id = $1
-        ORDER BY session_number ASC, session_date ASC
+        ORDER BY session_date ASC, session_number ASC
       `,
       [courseId]
     );
@@ -765,14 +1692,35 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden" });
     }
     const { title, session_date, start_time, end_time, mode } = req.body || {};
-    if (!title || !session_date) {
+    const normalizedSessionDate = normalizeDateOnly(session_date);
+    if (!title || !normalizedSessionDate) {
       return res.status(400).json({ error: "title and session_date are required" });
     }
+
+    const course = await queryOne<any>(
+      "SELECT start_date, end_date, credits FROM courses WHERE id = $1",
+      [courseId]
+    );
+    const courseStart = normalizeDateOnly(course?.start_date);
+    const courseEnd = normalizeDateOnly(course?.end_date);
+    if (!courseStart || !courseEnd) {
+      return res.status(400).json({ error: "Course must have valid start and end dates." });
+    }
+    if (normalizedSessionDate < courseStart || normalizedSessionDate > courseEnd) {
+      return res.status(400).json({ error: "Session date must be within course start/end dates." });
+    }
+
+    const expectedSessions = sessionsRequiredForCredits(Number(course?.credits || 1));
     const maxSession = await queryOne<{ max_no: number }>(
       "SELECT COALESCE(MAX(session_number), 0)::int AS max_no FROM course_sessions WHERE course_id = $1",
       [courseId]
     );
     const nextSession = (maxSession?.max_no ?? 0) + 1;
+    if (nextSession > expectedSessions) {
+      return res.status(400).json({
+        error: `This course is configured for ${expectedSessions} sessions based on credits.`,
+      });
+    }
 
     await execute(
       `
@@ -784,7 +1732,7 @@ async function startServer() {
         courseId,
         nextSession,
         String(title),
-        String(session_date),
+        normalizedSessionDate,
         start_time ? String(start_time) : null,
         end_time ? String(end_time) : null,
         mode ? String(mode) : "classroom",
@@ -798,11 +1746,70 @@ async function startServer() {
         SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
         FROM course_sessions
         WHERE course_id = $1
-        ORDER BY session_number ASC, session_date ASC
+        ORDER BY session_date ASC, session_number ASC
       `,
       [courseId]
     );
     res.json({ success: true, sessions });
+  });
+
+  app.put("/api/courses/:id/sessions/:sessionId", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const courseId = Number(req.params.id);
+    const sessionId = Number(req.params.sessionId);
+    if (!(await canManageCourse(req.user, courseId))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const session = await queryOne<any>(
+      `
+        SELECT id, title, session_date, start_time, end_time, mode
+        FROM course_sessions
+        WHERE id = $1 AND course_id = $2
+      `,
+      [sessionId, courseId]
+    );
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const nextTitle = String(req.body?.title ?? session.title ?? "").trim();
+    const normalizedSessionDate = normalizeDateOnly(req.body?.session_date ?? session.session_date);
+    const nextStartTime = req.body?.start_time ? String(req.body.start_time) : null;
+    const nextEndTime = req.body?.end_time ? String(req.body.end_time) : null;
+    const nextMode = req.body?.mode ? String(req.body.mode) : "classroom";
+
+    if (!nextTitle || !normalizedSessionDate) {
+      return res.status(400).json({ error: "title and session_date are required" });
+    }
+
+    const course = await queryOne<any>(
+      "SELECT start_date, end_date FROM courses WHERE id = $1",
+      [courseId]
+    );
+    const courseStart = normalizeDateOnly(course?.start_date);
+    const courseEnd = normalizeDateOnly(course?.end_date);
+    if (!courseStart || !courseEnd) {
+      return res.status(400).json({ error: "Course must have valid start and end dates." });
+    }
+    if (normalizedSessionDate < courseStart || normalizedSessionDate > courseEnd) {
+      return res.status(400).json({ error: "Session date must be within course start/end dates." });
+    }
+
+    await execute(
+      `
+        UPDATE course_sessions
+        SET title = $1,
+            session_date = $2::date,
+            start_time = $3,
+            end_time = $4,
+            mode = $5
+        WHERE id = $6
+      `,
+      [nextTitle, normalizedSessionDate, nextStartTime, nextEndTime, nextMode, sessionId]
+    );
+    await ensureFeedbackFormForCourse(courseId);
+    res.json({ success: true });
   });
 
   app.get("/api/courses/:id/feedback/active", authenticate, async (req: any, res) => {
@@ -813,17 +1820,18 @@ async function startServer() {
     }
 
     await ensureFeedbackFormForCourse(courseId);
+    const nowOverride = getNowOverride(req);
     const form = await queryOne<any>(
       `
         SELECT id, due_at
         FROM feedback_forms
         WHERE course_id = $1
-          AND NOW() >= open_at
-          AND NOW() <= due_at
+          AND COALESCE($2::timestamptz, NOW()) >= open_at
+          AND COALESCE($2::timestamptz, NOW()) <= due_at
         ORDER BY due_at DESC
         LIMIT 1
       `,
-      [courseId]
+      [courseId, nowOverride]
     );
 
     if (!form) return res.json(null);
@@ -834,7 +1842,7 @@ async function startServer() {
     );
     const questions = await query<any>(
       `
-        SELECT id, question_order, question_text, question_type, options
+        SELECT id, question_order, question_text, question_type, options, required
         FROM feedback_questions
         WHERE form_id = $1
         ORDER BY question_order ASC
@@ -852,6 +1860,7 @@ async function startServer() {
         question_text: q.question_text,
         question_type: q.question_type,
         options: safeJson(q.options, []),
+        required: Boolean(q.required),
       })),
     });
   });
@@ -869,11 +1878,75 @@ async function startServer() {
       return res.status(400).json({ error: "form_id and answers are required" });
     }
 
+    const nowOverride = getNowOverride(req);
     const form = await queryOne<any>(
-      "SELECT id FROM feedback_forms WHERE id = $1 AND course_id = $2 AND NOW() >= open_at AND NOW() <= due_at",
-      [formId, courseId]
+      `
+        SELECT id
+        FROM feedback_forms
+        WHERE id = $1
+          AND course_id = $2
+          AND COALESCE($3::timestamptz, NOW()) >= open_at
+          AND COALESCE($3::timestamptz, NOW()) <= due_at
+      `,
+      [formId, courseId, nowOverride]
     );
     if (!form) return res.status(400).json({ error: "Feedback form is not active" });
+
+    const questions = await query<any>(
+      `
+        SELECT id, question_type, options, required
+        FROM feedback_questions
+        WHERE form_id = $1
+        ORDER BY question_order ASC
+      `,
+      [formId]
+    );
+    if (questions.length === 0) {
+      return res.status(400).json({ error: "Feedback form has no questions configured" });
+    }
+
+    const incomingByQuestion = new Map<number, any>();
+    for (const rawAnswer of answers) {
+      const questionId = Number(rawAnswer?.question_id);
+      if (!questionId) continue;
+      incomingByQuestion.set(questionId, rawAnswer);
+    }
+
+    const normalizedAnswers = [];
+    for (const question of questions) {
+      const answer = incomingByQuestion.get(Number(question.id));
+      const isRequired = Boolean(question.required);
+      const type = String(question.question_type || "");
+      if (!answer) {
+        if (isRequired) {
+          return res.status(400).json({ error: "Please answer all required feedback questions." });
+        }
+        continue;
+      }
+
+      if (type === "mcq") {
+        const options = safeJson(question.options, []);
+        const choiceValue = Number(answer.choice_value);
+        if (!Number.isInteger(choiceValue) || choiceValue < 1 || choiceValue > options.length) {
+          return res.status(400).json({ error: "Invalid response for one or more MCQ questions." });
+        }
+        normalizedAnswers.push({
+          question_id: Number(question.id),
+          choice_value: choiceValue,
+          answer_text: "",
+        });
+      } else {
+        const answerText = String(answer.answer_text || "").trim();
+        if (isRequired && !answerText) {
+          return res.status(400).json({ error: "Please answer all required feedback questions." });
+        }
+        normalizedAnswers.push({
+          question_id: Number(question.id),
+          choice_value: null,
+          answer_text: answerText,
+        });
+      }
+    }
 
     try {
       await execute(
@@ -881,7 +1954,7 @@ async function startServer() {
           INSERT INTO feedback_submissions (form_id, course_id, user_id, answers)
           VALUES ($1, $2, $3, $4::jsonb)
         `,
-        [formId, courseId, req.user.id, JSON.stringify(answers)]
+        [formId, courseId, req.user.id, JSON.stringify(normalizedAnswers)]
       );
       res.json({ success: true });
     } catch {
@@ -979,6 +2052,93 @@ async function startServer() {
     res.json({ forms: responseForms });
   });
 
+  app.get("/api/faculty/feedback-insights/pending", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const nowOverride = getNowOverride(req);
+
+    const dueForms = await query<{ id: number }>(
+      `
+        SELECT f.id
+        FROM feedback_forms f
+        JOIN courses c ON c.id = f.course_id
+        WHERE c.created_by = $1
+          AND COALESCE($2::timestamptz, NOW()) > f.due_at
+      `,
+      [req.user.id, nowOverride]
+    );
+
+    for (const form of dueForms) {
+      await ensureFeedbackInsightForForm(Number(form.id), nowOverride);
+    }
+
+    const insights = await query<any>(
+      `
+        SELECT
+          fi.id,
+          fi.form_id,
+          fi.course_id,
+          fi.submissions_count,
+          fi.summary_text,
+          fi.metrics_json,
+          fi.text_comments_json,
+          fi.generated_at,
+          f.trigger_session_number,
+          f.open_at,
+          f.due_at,
+          c.name AS course_name,
+          c.code AS course_code
+        FROM feedback_insights fi
+        JOIN feedback_forms f ON f.id = fi.form_id
+        JOIN courses c ON c.id = fi.course_id
+        WHERE c.created_by = $1
+          AND fi.viewed_at IS NULL
+          AND fi.submissions_count > 0
+          AND COALESCE($2::timestamptz, NOW()) > f.due_at
+        ORDER BY f.due_at DESC, fi.generated_at DESC
+      `,
+      [req.user.id, nowOverride]
+    );
+
+    res.json(
+      insights.map((insight) => ({
+        id: insight.id,
+        form_id: insight.form_id,
+        course_id: insight.course_id,
+        course_name: insight.course_name,
+        course_code: insight.course_code,
+        trigger_session_number: insight.trigger_session_number,
+        open_at: insight.open_at,
+        due_at: insight.due_at,
+        submissions_count: Number(insight.submissions_count || 0),
+        summary_text: String(insight.summary_text || ""),
+        metrics: safeJson(insight.metrics_json, []),
+        text_comments: safeJson(insight.text_comments_json, []),
+        generated_at: insight.generated_at,
+      }))
+    );
+  });
+
+  app.post("/api/faculty/feedback-insights/:id/viewed", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const insightId = Number(req.params.id);
+    if (!insightId) return res.status(400).json({ error: "Invalid insight id" });
+
+    const insight = await queryOne<{ id: number }>(
+      `
+        SELECT fi.id
+        FROM feedback_insights fi
+        JOIN courses c ON c.id = fi.course_id
+        WHERE fi.id = $1 AND c.created_by = $2
+        LIMIT 1
+      `,
+      [insightId, req.user.id]
+    );
+    if (!insight) return res.status(404).json({ error: "Insight not found" });
+
+    await execute("UPDATE feedback_insights SET viewed_at = NOW() WHERE id = $1", [insightId]);
+    res.json({ success: true });
+  });
+
   app.get("/api/course-details/:id", authenticate, async (req: any, res) => {
     const courseId = Number(req.params.id);
     if (!(await canAccessCourse(req.user, courseId))) {
@@ -1019,6 +2179,7 @@ async function startServer() {
           m.key_takeaways,
           m.is_assigned,
           m.assigned_at,
+          m.due_at,
           m.created_at,
           s.title AS section_title,
           (
@@ -1048,6 +2209,10 @@ async function startServer() {
       course,
       details: {
         ...details,
+        feedback_trigger_session: normalizeFeedbackTriggerSession(
+          details?.feedback_trigger_session,
+          sessionsRequiredForCredits(Number(details?.credits || course?.credits || 1))
+        ),
         learning_outcomes: safeJson(details?.learning_outcomes, []),
         evaluation_components: normalizeEvaluationComponents(details?.evaluation_components),
       },
@@ -1066,28 +2231,55 @@ async function startServer() {
     if (!(await canManageCourse(req.user, courseId))) {
       return res.status(403).json({ error: "Forbidden" });
     }
-    const { faculty_info, teaching_assistant, credits, learning_outcomes, evaluation_components } =
+    const { faculty_info, teaching_assistant, credits, feedback_trigger_session, learning_outcomes, evaluation_components } =
       req.body || {};
-    const normalizedEvaluation = normalizeEvaluationComponents(evaluation_components);
+    const existingDetails = await queryOne<any>("SELECT * FROM course_details WHERE course_id = $1", [courseId]);
+    const normalizedEvaluation = normalizeEvaluationComponents(
+      evaluation_components ?? existingDetails?.evaluation_components ?? []
+    );
+    if (normalizedEvaluation.length > 0 && getEvaluationTotal(normalizedEvaluation) !== 100) {
+      return res.status(400).json({ error: "Evaluation weightages must add up to 100%." });
+    }
+    const normalizedCredits = normalizeCourseCredits(credits ?? existingDetails?.credits ?? 1);
+    const normalizedFeedbackTrigger = normalizeFeedbackTriggerSession(
+      feedback_trigger_session ?? existingDetails?.feedback_trigger_session,
+      sessionsRequiredForCredits(normalizedCredits)
+    );
 
     await execute(
       `
-        INSERT INTO course_details (course_id, faculty_info, teaching_assistant, credits, learning_outcomes, evaluation_components)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)
+        INSERT INTO course_details (
+          course_id,
+          faculty_info,
+          teaching_assistant,
+          credits,
+          feedback_trigger_session,
+          learning_outcomes,
+          evaluation_components
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
         ON CONFLICT (course_id)
         DO UPDATE SET
           faculty_info = EXCLUDED.faculty_info,
           teaching_assistant = EXCLUDED.teaching_assistant,
           credits = EXCLUDED.credits,
+          feedback_trigger_session = EXCLUDED.feedback_trigger_session,
           learning_outcomes = EXCLUDED.learning_outcomes,
           evaluation_components = EXCLUDED.evaluation_components
       `,
       [
         courseId,
-        faculty_info || null,
-        teaching_assistant || null,
-        Number(credits || 2),
-        JSON.stringify(learning_outcomes || []),
+        faculty_info !== undefined
+          ? String(faculty_info || "").trim() || null
+          : existingDetails?.faculty_info ?? null,
+        teaching_assistant !== undefined
+          ? String(teaching_assistant || "").trim() || null
+          : existingDetails?.teaching_assistant ?? null,
+        normalizedCredits,
+        normalizedFeedbackTrigger,
+        JSON.stringify(
+          normalizeLearningOutcomes(learning_outcomes ?? existingDetails?.learning_outcomes ?? [])
+        ),
         JSON.stringify(normalizedEvaluation),
       ]
     );
@@ -1114,6 +2306,7 @@ async function startServer() {
           m.key_takeaways,
           m.is_assigned,
           m.assigned_at,
+          m.due_at,
           m.created_at,
           s.title AS section_title,
           (
@@ -1154,6 +2347,7 @@ async function startServer() {
       source_file_base64,
       content,
       is_assigned,
+      due_at,
     } = req.body || {};
     if (!section_id || !title || !source_type) {
       return res.status(400).json({ error: "section_id, title and source_type are required" });
@@ -1205,6 +2399,8 @@ async function startServer() {
     const quizSource = `${summary.summary || ""}. ${(summary.keyTakeaways || []).join(". ")}`.trim();
     const quiz = makeQuizFromContent(quizSource || materialContent);
     const assigned = Boolean(is_assigned);
+    const dueDateOnly = normalizeDateOnly(due_at);
+    const dueAt = dueDateOnly ? `${dueDateOnly}T23:59:59Z` : null;
 
     const material = await queryOne<{ id: number }>(
       `
@@ -1222,9 +2418,25 @@ async function startServer() {
             key_takeaways,
             is_assigned,
             assigned_at,
+            due_at,
             created_by
           )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, CASE WHEN $11 THEN NOW() ELSE NULL END, $12)
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10::jsonb,
+          $11,
+          CASE WHEN $11 THEN NOW() ELSE NULL END,
+          CASE WHEN $11 THEN COALESCE($12::timestamptz, NOW() + INTERVAL '2 day') ELSE NULL END,
+          $13
+        )
         RETURNING id
       `,
       [
@@ -1239,6 +2451,7 @@ async function startServer() {
         summary.summary,
         JSON.stringify(summary.keyTakeaways || []),
         assigned,
+        dueAt,
         req.user.id,
       ]
     );
@@ -1268,6 +2481,8 @@ async function startServer() {
     if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
     const materialId = Number(req.params.id);
     const assigned = Boolean(req.body?.assigned);
+    const dueDateOnly = normalizeDateOnly(req.body?.due_at);
+    const dueAt = dueDateOnly ? `${dueDateOnly}T23:59:59Z` : null;
     const material = await queryOne<any>("SELECT id, course_id FROM course_materials WHERE id = $1", [materialId]);
     if (!material) return res.status(404).json({ error: "Material not found" });
     if (!(await canManageCourse(req.user, Number(material.course_id)))) {
@@ -1278,10 +2493,11 @@ async function startServer() {
       `
         UPDATE course_materials
         SET is_assigned = $1,
-            assigned_at = CASE WHEN $1 THEN NOW() ELSE NULL END
-        WHERE id = $2
+            assigned_at = CASE WHEN $1 THEN NOW() ELSE NULL END,
+            due_at = CASE WHEN $1 THEN COALESCE($2::timestamptz, due_at, NOW() + INTERVAL '2 day') ELSE NULL END
+        WHERE id = $3
       `,
-      [assigned, materialId]
+      [assigned, dueAt, materialId]
     );
     res.json({ success: true });
   });
@@ -1716,6 +2932,47 @@ async function startServer() {
     } catch {
       res.status(400).json({ error: "User already enrolled or error occurred" });
     }
+  });
+
+  app.post("/api/courses/:id/enrol-bulk", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const courseId = Number(req.params.id);
+    if (!(await canManageCourse(req.user, courseId))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const userIds: number[] = Array.isArray(req.body?.user_ids)
+      ? [...new Set<number>(req.body.user_ids.map((id: any) => Number(id)).filter((id: number) => id > 0))]
+      : [];
+    if (userIds.length === 0) {
+      return res.status(400).json({ error: "Select at least one student." });
+    }
+
+    const validIds: number[] = [];
+    for (const userId of userIds) {
+      const student = await queryOne<{ id: number }>(
+        "SELECT id FROM users WHERE role = 'student' AND id = $1 LIMIT 1",
+        [userId]
+      );
+      if (student?.id) validIds.push(Number(student.id));
+    }
+    if (validIds.length === 0) {
+      return res.status(400).json({ error: "No valid students selected." });
+    }
+
+    for (const studentId of validIds) {
+      await execute(
+        `
+          INSERT INTO enrollments (user_id, course_id, progress, last_accessed)
+          VALUES ($1, $2, 0, NOW())
+          ON CONFLICT (user_id, course_id)
+          DO NOTHING
+        `,
+        [studentId, courseId]
+      );
+    }
+
+    res.json({ success: true, enrolled_count: validIds.length });
   });
 
   app.get("/api/courses/:id/activities", authenticate, async (req: any, res) => {
