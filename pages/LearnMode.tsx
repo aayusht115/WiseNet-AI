@@ -47,11 +47,14 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
   const [citationsEnabled, setCitationsEnabled] = useState(false);
   const [audioPlaybackVisible, setAudioPlaybackVisible] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const contentPaneRef = React.useRef<HTMLDivElement>(null);
 
   // Quiz State
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [currentQuizIndex, setCurrentQuizIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [quizAnswers, setQuizAnswers] = useState<number[]>([]);
   const [quizScore, setQuizScore] = useState(0);
   const [quizLoading, setQuizLoading] = useState(false);
 
@@ -86,28 +89,86 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
   };
 
   const handleStartQuiz = async () => {
+    setQuizLoading(true);
+    setRightView('quiz');
     try {
       await fetch(`/api/materials/${session.id}/progress/read`, { method: "POST" });
+      const res = await fetch(`/api/materials/${session.id}/quiz`);
+      if (res.ok) {
+        const questions = await res.json();
+        if (Array.isArray(questions) && questions.length > 0) {
+          setQuizQuestions(questions);
+          setCurrentQuizIndex(0);
+          setSelectedOption(null);
+          setQuizScore(0);
+        }
+      }
     } catch (error) {
-      console.error("Failed to mark pre-read as read", error);
+      console.error("Failed to load quiz", error);
+    } finally {
+      setQuizLoading(false);
     }
-    onComplete();
   };
 
   const handleQuizAnswer = (idx: number) => {
     if (selectedOption !== null) return;
     setSelectedOption(idx);
+    setQuizAnswers(prev => [...prev, idx]);
     if (idx === quizQuestions[currentQuizIndex].correctAnswer) {
       setQuizScore(s => s + 1);
     }
   };
 
-  const nextQuizQuestion = () => {
+  const nextQuizQuestion = async () => {
     if (currentQuizIndex < quizQuestions.length - 1) {
       setCurrentQuizIndex(i => i + 1);
       setSelectedOption(null);
     } else {
+      // Submit answers to server, then show result
+      const answers = [...quizAnswers];
+      try {
+        await fetch(`/api/materials/${session.id}/quiz/submit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answers }),
+        });
+      } catch (error) {
+        console.error("Failed to submit quiz", error);
+      }
       setRightView('quiz_result');
+      onComplete();
+    }
+  };
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      contentPaneRef.current?.requestFullscreen().catch(() => {});
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen().catch(() => {});
+      setIsFullscreen(false);
+    }
+  };
+
+  const retryQuiz = async () => {
+    setQuizScore(0);
+    setCurrentQuizIndex(0);
+    setSelectedOption(null);
+    setQuizAnswers([]);
+    setRightView('quiz');
+    setQuizLoading(true);
+    try {
+      const res = await fetch(`/api/materials/${session.id}/quiz`);
+      if (res.ok) {
+        const questions = await res.json();
+        if (Array.isArray(questions) && questions.length > 0) {
+          setQuizQuestions(questions);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to reload quiz", error);
+    } finally {
+      setQuizLoading(false);
     }
   };
 
@@ -186,9 +247,13 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
                     "I've read through <strong>{currentItem.title}</strong>. How can I help you clarify this topic?"
                    </p>
                    <div className="grid grid-cols-1 gap-2">
-                     {["Summarize the RAFT algorithm", "Explain CAP Theorem simply", "What are the key trade-offs?"].map((s, i) => (
-                       <button 
-                         key={i} 
+                     {[
+                       `Summarize the key points of "${currentItem.title}"`,
+                       "What are the main arguments or findings?",
+                       "What should I focus on before class?"
+                     ].map((s, i) => (
+                       <button
+                         key={i}
                          onClick={() => { setChatInput(s); }}
                          className="text-left p-3 text-xs bg-white border border-slate-200 hover:border-moodle-blue rounded text-slate-600 transition-colors"
                        >
@@ -281,23 +346,45 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
       {/* Split Screen Layout */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left: Content Viewer */}
-        <div className="flex-1 bg-slate-50 flex flex-col relative border-r border-slate-200">
+        <div ref={contentPaneRef} className="flex-1 bg-slate-50 flex flex-col relative border-r border-slate-200">
           <div className="flex-1 p-12 overflow-y-auto">
             <div className="max-w-3xl mx-auto space-y-8 bg-white p-12 shadow-sm border border-slate-200 rounded">
               <div className="flex items-center space-x-3 mb-8">
                 <span className="px-2 py-1 bg-slate-100 text-slate-500 text-[10px] font-bold rounded uppercase tracking-wider">{currentItem.type}</span>
               </div>
               <h1 className="text-3xl font-bold leading-tight text-slate-900">{currentItem.title}</h1>
-              <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed text-lg">
-                {currentItem.content.split('\n').map((p, i) => (
-                  <p key={i} className={`mb-6 relative group transition-colors ${citationsEnabled && i % 3 === 0 ? 'bg-blue-50' : ''}`}>
-                    {p}
-                    {citationsEnabled && i % 3 === 0 && (
-                      <span className="absolute -left-10 top-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-bold text-moodle-blue border border-blue-200 px-1 rounded bg-white">REF: {i + 1}</span>
-                    )}
-                  </p>
-                ))}
-              </div>
+              {currentItem.summary ? (
+                <div className="space-y-6">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-5">
+                    <p className="text-[10px] font-bold text-moodle-blue uppercase tracking-widest mb-2">AI Summary</p>
+                    <p className="text-slate-700 leading-relaxed text-base">{currentItem.summary}</p>
+                  </div>
+                  {currentItem.keyTakeaways && currentItem.keyTakeaways.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-3">Key Takeaways</p>
+                      <ul className="space-y-2">
+                        {currentItem.keyTakeaways.map((t, i) => (
+                          <li key={i} className="flex gap-3 text-slate-700 text-sm leading-relaxed">
+                            <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">{i + 1}</span>
+                            {t}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="prose prose-slate max-w-none text-slate-700 leading-relaxed text-lg">
+                  {currentItem.content.split('\n').filter(Boolean).map((p, i) => (
+                    <p key={i} className={`mb-6 relative group transition-colors ${citationsEnabled && i % 3 === 0 ? 'bg-blue-50' : ''}`}>
+                      {p}
+                      {citationsEnabled && i % 3 === 0 && (
+                        <span className="absolute -left-10 top-1 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-bold text-moodle-blue border border-blue-200 px-1 rounded bg-white">REF: {i + 1}</span>
+                      )}
+                    </p>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           
@@ -327,7 +414,7 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
               <ChevronRight size={20} />
             </button>
             <div className="h-4 w-px bg-slate-200"></div>
-            <button className="text-slate-400 hover:text-moodle-blue"><Maximize2 size={18} /></button>
+            <button onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} className="text-slate-400 hover:text-moodle-blue"><Maximize2 size={18} /></button>
           </div>
         </div>
 
@@ -511,24 +598,26 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
                   <p className="text-slate-500 mt-2 font-medium">You scored {quizScore} out of {quizQuestions.length}</p>
                 </div>
                 <div className="p-6 bg-slate-50 rounded border border-slate-200 space-y-4">
-                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest text-left">Weak Topics Identified</h4>
+                  <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest text-left">
+                    {quizScore === quizQuestions.length ? "Result" : "Questions to Review"}
+                  </h4>
                   <div className="flex flex-wrap gap-2">
-                    {quizScore < quizQuestions.length ? (
-                      <span className="px-3 py-1 bg-red-50 text-red-600 rounded-full text-[10px] font-bold border border-red-100">Distributed Logic</span>
-                    ) : (
+                    {quizScore === quizQuestions.length ? (
                       <span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-bold border border-emerald-100">Perfect Mastery!</span>
+                    ) : (
+                      quizAnswers.map((ans, i) =>
+                        ans !== quizQuestions[i]?.correctAnswer ? (
+                          <span key={i} className="px-3 py-1 bg-red-50 text-red-600 rounded text-[10px] font-bold border border-red-100 text-left">
+                            Q{i + 1}: {quizQuestions[i]?.question?.slice(0, 50)}{quizQuestions[i]?.question?.length > 50 ? "…" : ""}
+                          </span>
+                        ) : null
+                      )
                     )}
                   </div>
                 </div>
                 <div className="flex gap-4">
-                  <button 
-                    onClick={() => {
-                      setRightView('quiz');
-                      setCurrentQuizIndex(0);
-                      setSelectedOption(null);
-                      setQuizScore(0);
-                      handleStartQuiz();
-                    }}
+                  <button
+                    onClick={retryQuiz}
                     className="flex-1 py-3 bg-white border border-slate-200 hover:bg-slate-50 text-slate-600 rounded text-xs font-bold flex items-center justify-center gap-2"
                   >
                     <RotateCcw size={14} />

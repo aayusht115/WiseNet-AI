@@ -134,7 +134,7 @@ export interface PreReadSession {
   estimatedTime: string;
   progress: number;
   status: 'not_started' | 'in_progress' | 'completed';
-  items: { id: string; title: string; type: 'pdf' | 'video' | 'article'; content: string }[];
+  items: { id: string; title: string; type: 'pdf' | 'video' | 'article'; content: string; summary?: string; keyTakeaways?: string[] }[];
 }
 
 export interface ReflectionPrompt {

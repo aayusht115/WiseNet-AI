@@ -1447,7 +1447,11 @@ async function startServer() {
           JOIN enrollments e ON e.course_id = c.id AND e.user_id = $1
           LEFT JOIN material_learning_progress p ON p.material_id = m.id AND p.user_id = $1
           WHERE m.is_assigned = TRUE
-            AND COALESCE(p.quiz_completed_at, p.read_completed_at) IS NULL
+            AND p.quiz_completed_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM material_quiz_attempts qa
+              WHERE qa.material_id = m.id AND qa.user_id = $1
+            )
 
           UNION ALL
 
@@ -3116,7 +3120,7 @@ async function startServer() {
 
     const questions = await query<any>(
       `
-        SELECT id, question_order, question_text, options
+        SELECT id, question_order, question_text, options, correct_answer, explanation
         FROM material_quiz_questions
         WHERE material_id = $1
         ORDER BY question_order ASC
@@ -3130,6 +3134,8 @@ async function startServer() {
         order: q.question_order,
         question: q.question_text,
         options: safeJson(q.options, []),
+        correctAnswer: Number(q.correct_answer),
+        explanation: q.explanation || "",
       }))
     );
   });
@@ -3512,6 +3518,8 @@ async function startServer() {
           m.id,
           m.title,
           m.content,
+          m.summary,
+          m.key_takeaways,
           m.source_type,
           m.created_at,
           c.name as course_name,
@@ -3554,6 +3562,8 @@ async function startServer() {
           title: s.title,
           type: s.source_type === "link" ? "article" : "pdf",
           content: s.content || "",
+          summary: s.summary || "",
+          keyTakeaways: safeJson(s.key_takeaways, []),
         },
       ],
     }));
