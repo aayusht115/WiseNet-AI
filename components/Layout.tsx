@@ -172,39 +172,31 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
           </div>
 
           <nav className="hidden md:flex items-center ml-4">
-            <NavItem 
-              label="Home" 
+            <NavItem
+              label="Home"
               active={role === "student" ? activeTab === NavigationTab.DASHBOARD : activeTab === NavigationTab.FACULTY_SETUP}
               onClick={() =>
                 onTabChange(role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_SETUP)
               }
             />
-            <NavItem 
-              label="Dashboard" 
-              active={
-                role === "student"
-                  ? activeTab === NavigationTab.DASHBOARD
-                  : activeTab === NavigationTab.FACULTY_ANALYTICS
-              }
-              onClick={() =>
-                onTabChange(
-                  role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_ANALYTICS
-                )
-              }
-            />
-            {role === "student" ? (
+            {role === "faculty" && (
               <NavItem
-                label="My courses"
-                active={activeTab === NavigationTab.DASHBOARD || activeTab === NavigationTab.COURSE_MANAGEMENT}
-                onClick={() => onTabChange(NavigationTab.DASHBOARD)}
-              />
-            ) : (
-              <NavItem
-                label="My courses"
-                active={activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT}
-                onClick={() => onTabChange(NavigationTab.FACULTY_SETUP)}
+                label="Dashboard"
+                active={activeTab === NavigationTab.FACULTY_ANALYTICS}
+                onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
               />
             )}
+            <NavItem
+              label="My courses"
+              active={
+                role === "student"
+                  ? activeTab === NavigationTab.COURSE_MANAGEMENT
+                  : activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT
+              }
+              onClick={() =>
+                onTabChange(role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_SETUP)
+              }
+            />
           </nav>
         </div>
         
@@ -330,22 +322,16 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
           <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto">
             {role === 'student' ? (
               <>
-                <SidebarItem 
-                  icon={<Home size={18} />} 
-                  label="Home" 
+                <SidebarItem
+                  icon={<LayoutDashboard size={18} />}
+                  label="Dashboard"
                   active={activeTab === NavigationTab.DASHBOARD}
                   onClick={() => onTabChange(NavigationTab.DASHBOARD)}
                 />
-                <SidebarItem 
-                  icon={<LayoutDashboard size={18} />} 
-                  label="Dashboard" 
-                  active={activeTab === NavigationTab.DASHBOARD}
-                  onClick={() => onTabChange(NavigationTab.DASHBOARD)}
-                />
-                <SidebarItem 
-                  icon={<BookOpen size={18} />} 
-                  label="My courses" 
-                  active={activeTab === NavigationTab.DASHBOARD || activeTab === NavigationTab.COURSE_MANAGEMENT}
+                <SidebarItem
+                  icon={<BookOpen size={18} />}
+                  label="My courses"
+                  active={activeTab === NavigationTab.COURSE_MANAGEMENT}
                   onClick={() => onTabChange(NavigationTab.DASHBOARD)}
                 />
 

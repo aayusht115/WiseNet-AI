@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Loader2, MessageSquareText, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, MessageSquareText, Plus, Trash2, UploadCloud } from "lucide-react";
 import ParticipantEnrollmentPanel, {
   ParticipantUser,
 } from "../components/ParticipantEnrollmentPanel";
@@ -1457,17 +1457,19 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
 
             {materialForm.source_type === "pdf" && (
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">
-                  Upload PDF
+                <p className="text-sm font-medium text-slate-700">Upload PDF</p>
+                <label className="inline-flex items-center gap-2 cursor-pointer bg-slate-800 hover:bg-slate-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                  <UploadCloud size={16} />
+                  <span>Choose PDF file</span>
                   <input
                     type="file"
                     accept="application/pdf"
-                    className="mt-1 block w-full text-sm"
+                    className="hidden"
                     onChange={(e) => handlePdfSelected(e.target.files?.[0] || null)}
                   />
                 </label>
                 {materialForm.source_file_name && (
-                  <p className="text-xs text-slate-500">Selected file: {materialForm.source_file_name}</p>
+                  <p className="text-xs text-slate-500 truncate">Selected file: {materialForm.source_file_name}</p>
                 )}
               </div>
             )}
@@ -1482,7 +1484,24 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
               />
             ) : null}
 
-            {pdfStatus ? <p className="text-xs text-slate-600">{pdfStatus}</p> : null}
+            {pdfStatus && (
+              <div className={`flex items-start gap-2 px-3 py-2 rounded text-sm ${
+                pdfStatus.toLowerCase().includes("error") ||
+                pdfStatus.toLowerCase().includes("could not") ||
+                pdfStatus.toLowerCase().includes("failed")
+                  ? "bg-red-50 text-red-700 border border-red-200"
+                  : pdfStatus.toLowerCase().includes("submitted") || pdfStatus.toLowerCase().includes("selected")
+                  ? "bg-green-50 text-green-700 border border-green-200"
+                  : "bg-blue-50 text-blue-700 border border-blue-200"
+              }`}>
+                {pdfStatus.toLowerCase().includes("error") || pdfStatus.toLowerCase().includes("could not") || pdfStatus.toLowerCase().includes("failed")
+                  ? <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                  : pdfStatus.toLowerCase().includes("submitted") || pdfStatus.toLowerCase().includes("selected")
+                  ? <CheckCircle2 size={15} className="shrink-0 mt-0.5" />
+                  : <Loader2 size={15} className="shrink-0 mt-0.5 animate-spin" />}
+                {pdfStatus}
+              </div>
+            )}
 
             <div className="mt-2 p-3 border border-slate-200 rounded bg-slate-50 flex items-center justify-between gap-3">
               <p className="text-xs text-slate-600">

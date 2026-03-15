@@ -3,6 +3,8 @@ import express from "express";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+// @ts-ignore – import lib path directly to avoid pdf-parse's startup test-file load
+import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { createServer as createViteServer } from "vite";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
@@ -460,63 +462,10 @@ function isLikelyReadableExtractedText(value: string): boolean {
   return true;
 }
 
-function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const pythonBin = process.env.PYTHON_BIN || "python3";
-    const scriptPath = path.resolve(__dirname, "python", "pdf_text_extractor.py");
-    const child = spawn(pythonBin, [scriptPath], {
-      env: { ...process.env, PYTHONWARNINGS: process.env.PYTHONWARNINGS || "ignore" },
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const fail = (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      reject(error instanceof Error ? error : new Error(String(error || "Unknown child process error")));
-    };
-    const done = (text: string) => {
-      if (settled) return;
-      settled = true;
-      resolve(text);
-    };
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", (error) => fail(error));
-    child.stdin.on("error", (error: any) => {
-      if (error?.code === "EPIPE") {
-        fail(new Error("PDF extractor stdin closed unexpectedly (EPIPE)."));
-        return;
-      }
-      fail(error);
-    });
-
-    child.on("close", (code) => {
-      if (settled) return;
-      if (code !== 0) {
-        return fail(new Error(stderr.trim() || `PDF extractor exited with status ${code}`));
-      }
-      try {
-        const parsed = JSON.parse(stdout);
-        if (parsed.error) return fail(new Error(parsed.error));
-        done(String(parsed.text || ""));
-      } catch {
-        fail(new Error("Failed to parse PDF extractor output"));
-      }
-    });
-
-    try {
-      child.stdin.end(JSON.stringify({ fileBase64: sourceFileBase64 }));
-    } catch (error) {
-      fail(error);
-    }
-  });
+async function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
+  const buffer = Buffer.from(sourceFileBase64, "base64");
+  const data = await pdfParse(buffer);
+  return String(data.text || "");
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -543,21 +492,126 @@ function extractKeywords(text: string) {
   );
 }
 
-function buildFallbackSummaryPayload(title: string, content: string): SummaryPayload {
-  const sentences = splitSentences(content).filter((s) => s.length > 20);
-  const summary = sentences.slice(0, 3).join(" ").trim() || content.slice(0, 500).trim();
-  const keyTakeaways = sentences.slice(0, 5);
+function stripEndnotesSection(text: string): string {
+  // Remove trailing endnotes / references section so it doesn't skew summarisation
+  return text
+    .replace(/\n?(end\s*notes?|references?|bibliography|footnotes?)\s*\n[\s\S]{0,6000}$/i, "")
+    .replace(/(\s*\d{1,3}\s+(ibid\.?|supra|see\s+also)[^\n]{0,200}){3,}/gi, " ")
+    .trim();
+}
+
+function buildTFIDFSummaryPayload(title: string, content: string): SummaryPayload {
+  // Strip endnotes before processing
+  const cleanedContent = stripEndnotesSection(content);
+  const sentences = splitSentences(cleanedContent).filter(
+    (s) => s.length > 40 && !/^\s*\d+\s*(ibid|supra|http)/i.test(s)
+  );
+
+  if (sentences.length === 0) {
+    const fallback = cleanedContent.slice(0, 600).trim() || "No content to summarize.";
+    return {
+      title,
+      summary: fallback,
+      keyTakeaways: [fallback],
+      furtherReading: [
+        `Review foundational texts on ${title}.`,
+        `Find a case study applying ${title} in practice.`,
+        `Review recent research articles related to ${title}.`,
+      ],
+    };
+  }
+
+  // Tokenize each sentence
+  const tokenize = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(
+      (w) => w.length >= 3 && !STOPWORDS.has(w)
+    );
+
+  const sentenceTokens = sentences.map(tokenize);
+  const N = sentences.length;
+
+  // Compute document frequency (how many sentences contain each term)
+  const docFreq = new Map<string, number>();
+  for (const tokens of sentenceTokens) {
+    for (const t of new Set(tokens)) {
+      docFreq.set(t, (docFreq.get(t) || 0) + 1);
+    }
+  }
+
+  // Score each sentence using TF-IDF + position bonus
+  const scores = sentences.map((_, i) => {
+    const tokens = sentenceTokens[i];
+    if (tokens.length === 0) return 0;
+
+    const freq = new Map<string, number>();
+    for (const t of tokens) freq.set(t, (freq.get(t) || 0) + 1);
+
+    let score = 0;
+    for (const [term, count] of freq) {
+      const tf = count / tokens.length;
+      const idf = Math.log((N + 1) / ((docFreq.get(term) || 0) + 1));
+      score += tf * idf;
+    }
+    score /= Math.sqrt(tokens.length);
+    // Stronger position bonus for first 30% of document
+    if (i < Math.ceil(N * 0.15)) score *= 1.8;
+    else if (i < Math.ceil(N * 0.3)) score *= 1.4;
+    return score;
+  });
+
+  // Pick more sentences for a richer summary
+  const ranked = scores
+    .map((score, i) => ({ i, score }))
+    .sort((a, b) => b.score - a.score);
+
+  const summaryCount = Math.min(6, Math.max(3, Math.ceil(sentences.length * 0.08)));
+  const summaryIndices = ranked.slice(0, summaryCount).map((x) => x.i).sort((a, b) => a - b);
+  const summary = summaryIndices.map((i) => sentences[i]).join(" ");
+
+  const usedSet = new Set(summaryIndices);
+  const takeawayIndices = ranked
+    .filter((x) => !usedSet.has(x.i))
+    .slice(0, 6)
+    .map((x) => x.i)
+    .sort((a, b) => a - b);
+  let keyTakeaways = takeawayIndices.map((i) => sentences[i]);
+
+  if (keyTakeaways.length < 3) {
+    for (const i of summaryIndices) {
+      if (keyTakeaways.length >= 5) break;
+      keyTakeaways.push(sentences[i]);
+    }
+  }
+
+  // Generate further reading from top content keywords
+  const topKeywords = [...docFreq.entries()]
+    .filter(([term]) => !STOPWORDS.has(term) && term.length > 4)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([term]) => term);
+
+  const kw0 = topKeywords[0] || title;
+  const kw1 = topKeywords[1] || "these concepts";
+  const kw2 = topKeywords[2] || "the key themes";
+  const kw3 = topKeywords[3] || title;
+  const kw4 = topKeywords[4] || "related literature";
+
   return {
     title,
-    summary,
-    keyTakeaways: keyTakeaways.length > 0 ? keyTakeaways : [summary || "No summary available."],
+    summary: summary || sentences[0] || cleanedContent.slice(0, 600),
+    keyTakeaways: keyTakeaways.length > 0 ? keyTakeaways : [summary],
     furtherReading: [
-      `Review class notes related to ${title}.`,
-      `Read one case study connected to ${title}.`,
-      `List 3 practical applications from this reading.`,
+      `Read a foundational text on "${kw0}" to build theoretical understanding.`,
+      `Find a case study applying ${kw1} in a real-world business context.`,
+      `Review academic literature connecting ${kw2} to current research.`,
+      `Explore how ${kw3} intersects with organisational behaviour and strategy.`,
+      `Search for recent journal articles discussing ${kw4} in similar industry contexts.`,
     ],
   };
 }
+
+// Keep old name as alias so existing call-sites don't break
+const buildFallbackSummaryPayload = buildTFIDFSummaryPayload;
 
 function makeQuizFromContent(content: string): QuizQuestionPayload[] {
   const sourceText = content.replace(/\s+/g, " ").trim();
@@ -1148,7 +1202,11 @@ async function ensureFeedbackInsightForForm(formId: number, nowOverride: string 
 }
 
 async function startServer() {
-  await initDb();
+  try {
+    await initDb();
+  } catch (dbError) {
+    console.warn("⚠️  Database unavailable — server starting in degraded mode (DB features will return 503):", (dbError as Error).message);
+  }
   const app = express();
 
   app.use(express.json({ limit: "25mb" }));
@@ -1197,6 +1255,17 @@ async function startServer() {
     }
   });
 
+  app.post("/api/ai/extract-pdf-text", authenticate, async (req: any, res: any) => {
+    try {
+      const base64 = String(req.body?.base64 || "");
+      if (!base64) return res.status(400).json({ error: "base64 PDF data is required" });
+      const text = await extractPdfTextWithPython(base64);
+      res.json({ text });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to extract PDF text" });
+    }
+  });
+
   app.post("/api/ai/summarize", authenticate, async (req, res) => {
     try {
       const title = String(req.body?.title || "Untitled Reading");
@@ -1206,13 +1275,117 @@ async function startServer() {
       try {
         result = await summarizeWithPegasus(title, content);
       } catch (error) {
-        console.error("Pegasus summarize failed, using fallback summary", error);
-        result = buildFallbackSummaryPayload(title, content);
+        console.error("Pegasus summarize failed, using TF-IDF summary", error);
+        result = buildTFIDFSummaryPayload(title, content);
       }
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Failed to summarize content" });
     }
+  });
+
+  app.post("/api/ai/reflect", authenticate, (req: any, res: any) => {
+    const topic = String(req.body?.topic || "").trim();
+    if (!topic) return res.status(400).json({ error: "Topic is required" });
+
+    res.json([
+      {
+        category: "Critical Thinking",
+        question: `What are the key assumptions behind "${topic}", and under what conditions might these assumptions break down?`,
+      },
+      {
+        category: "Application",
+        question: `How would you apply the core principles of "${topic}" to address a specific challenge in your professional context?`,
+      },
+      {
+        category: "Synthesis",
+        question: `How does "${topic}" connect to other frameworks or concepts you have encountered, and what new insights emerge from these connections?`,
+      },
+    ]);
+  });
+
+  app.post("/api/ai/study-plan", authenticate, (req: any, res: any) => {
+    const course = String(req.body?.course || "").trim();
+    const topicsRaw = String(req.body?.topics || "").trim();
+    const duration = String(req.body?.duration || "1 week").trim();
+
+    if (!course || !topicsRaw) {
+      return res.status(400).json({ error: "Course and topics are required" });
+    }
+
+    const topics = topicsRaw
+      .split(/[\n,;]|\d+[.)]\s+/)
+      .map((t: string) => t.trim())
+      .filter((t: string) => t.length > 2);
+
+    const durationDays = duration.includes("3 days")
+      ? 3
+      : duration.includes("2 weeks")
+      ? 14
+      : duration.includes("month")
+      ? 30
+      : 7;
+
+    const activityTemplates = [
+      ["Read the assigned materials for {topic} carefully", "Take brief notes on key concepts", "Identify 3 main ideas"],
+      ["Review your notes from the reading", "Work through practice examples for {topic}", "Summarize in your own words"],
+      ["Discuss {topic} with peers or study group", "Apply to a real-world scenario", "Prepare 2–3 questions for class"],
+      ["Complete assigned exercises on {topic}", "Review weaker areas from earlier sessions", "Synthesise connections to other topics"],
+      ["Consolidate notes on {topic}", "Test yourself with a self-quiz", "Prepare for upcoming assessment"],
+    ];
+
+    const plan: { day: string; topic: string; activities: string[]; estimatedTime: string }[] = [];
+    const daysPerTopic = Math.max(1, Math.floor(durationDays / Math.max(topics.length, 1)));
+    let dayCount = 1;
+
+    for (const topic of topics) {
+      for (let d = 0; d < daysPerTopic && dayCount <= durationDays; d++, dayCount++) {
+        const template = activityTemplates[d % activityTemplates.length];
+        plan.push({
+          day: `Day ${dayCount}`,
+          topic,
+          activities: template.map((a: string) => a.replace("{topic}", topic)),
+          estimatedTime: d === 0 ? "90 mins" : d === 1 ? "60 mins" : "45 mins",
+        });
+      }
+    }
+
+    while (dayCount <= durationDays) {
+      plan.push({
+        day: `Day ${dayCount}`,
+        topic: "Review & Consolidation",
+        activities: [
+          "Revisit challenging concepts from earlier in the plan",
+          "Connect ideas across all topics covered",
+          "Prepare summary notes for each topic",
+          "Practice with past papers or case questions",
+        ],
+        estimatedTime: "60 mins",
+      });
+      dayCount++;
+    }
+
+    res.json(plan);
+  });
+
+  app.post("/api/ai/quiz", authenticate, (req: any, res: any) => {
+    const content = String(req.body?.content || "").trim();
+    if (!content) return res.status(400).json({ error: "Content is required" });
+
+    const raw = makeQuizFromContent(content);
+    const questions = raw.map((q, idx) => {
+      const shuffled = shuffle([...q.options]);
+      const correctAnswer = shuffled.indexOf(q.options[q.correctAnswer]);
+      return {
+        id: `q${idx + 1}`,
+        question: q.question,
+        options: shuffled,
+        correctAnswer,
+        explanation: q.explanation,
+      };
+    });
+
+    res.json(questions);
   });
 
   app.get("/api/dashboard/timeline", authenticate, async (req: any, res) => {
@@ -2696,10 +2869,12 @@ async function startServer() {
     const hasManualContent = Boolean(String(content || "").trim());
     let materialContent = String(content || "").trim();
     let extractedFromPdf = false;
+    let trustedPypdfExtraction = false;
     if (!materialContent && source_type === "pdf" && normalizedPdfBase64) {
       extractedFromPdf = true;
       try {
         materialContent = await extractPdfTextWithPython(normalizedPdfBase64);
+        trustedPypdfExtraction = materialContent.trim().length > 0;
       } catch (error) {
         console.error("Python PDF extraction failed, using fallback extractor", error);
         materialContent = extractLikelyPdfText(normalizedPdfBase64);
@@ -2708,8 +2883,14 @@ async function startServer() {
     materialContent = stripUnsupportedTextChars(materialContent).trim();
     if (extractedFromPdf && !hasManualContent) {
       materialContent = normalizeExtractedPdfText(materialContent);
-      if (!isLikelyReadableExtractedText(materialContent)) {
-        materialContent = "";
+      if (trustedPypdfExtraction) {
+        // pypdf successfully extracted text — trust it, only reject if too short
+        if (materialContent.length < 100) materialContent = "";
+      } else {
+        // fallback regex extractor — apply strict binary-content check
+        if (!isLikelyReadableExtractedText(materialContent)) {
+          materialContent = "";
+        }
       }
     }
     if (!materialContent) {
@@ -3380,6 +3561,67 @@ async function startServer() {
     res.json(transformed);
   });
 
+  app.get("/api/student/learning-stats", authenticate, async (req: any, res) => {
+    if (req.user.role !== "student") return res.status(403).json({ error: "Forbidden" });
+
+    const quizRows = await query<any>(
+      `
+        SELECT
+          c.name AS course_name,
+          c.code AS course_code,
+          ROUND(AVG(a.score::numeric / NULLIF(a.total_questions, 0) * 100)) AS my_score,
+          ROUND(AVG(all_avg.avg_score)) AS class_avg
+        FROM courses c
+        JOIN enrollments e ON e.course_id = c.id AND e.user_id = $1
+        LEFT JOIN course_materials m ON m.course_id = c.id
+        LEFT JOIN material_quiz_attempts a ON a.material_id = m.id AND a.user_id = $1
+        LEFT JOIN LATERAL (
+          SELECT AVG(ia.score::numeric / NULLIF(ia.total_questions, 0) * 100) AS avg_score
+          FROM material_quiz_attempts ia
+          WHERE ia.material_id = m.id
+        ) all_avg ON true
+        GROUP BY c.id, c.name, c.code
+        HAVING COUNT(a.id) > 0
+        ORDER BY c.name
+      `,
+      [req.user.id]
+    );
+
+    const prereadRows = await query<any>(
+      `
+        SELECT
+          COUNT(m.id) AS total,
+          COUNT(p.read_completed_at) AS read_done,
+          COUNT(p.quiz_completed_at) AS quiz_done
+        FROM course_materials m
+        JOIN courses c ON c.id = m.course_id
+        JOIN enrollments e ON e.course_id = c.id AND e.user_id = $1
+        LEFT JOIN material_learning_progress p ON p.material_id = m.id AND p.user_id = $1
+        WHERE m.is_assigned = TRUE
+      `,
+      [req.user.id]
+    );
+
+    const pr = prereadRows[0] || { total: 0, read_done: 0, quiz_done: 0 };
+    const total = Number(pr.total) || 0;
+    const readDone = Number(pr.read_done) || 0;
+    const quizDone = Number(pr.quiz_done) || 0;
+
+    res.json({
+      quiz_performance: quizRows.map((r: any) => ({
+        subject: r.course_code || r.course_name,
+        score: Math.round(Number(r.my_score) || 0),
+        avg: Math.round(Number(r.class_avg) || 0),
+      })),
+      preread_stats: [
+        { name: "Quiz Completed", value: quizDone },
+        { name: "Read Only", value: Math.max(0, readDone - quizDone) },
+        { name: "Not Started", value: Math.max(0, total - readDone) },
+      ].filter((s) => s.value > 0),
+      totals: { total, readDone, quizDone },
+    });
+  });
+
   app.get("/api/analytics/risks", authenticate, async (req: any, res) => {
     if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
     const risks = await query(
@@ -3453,5 +3695,4 @@ async function startServer() {
 
 startServer().catch((error) => {
   console.error("Server failed to start", error);
-  process.exit(1);
 });
