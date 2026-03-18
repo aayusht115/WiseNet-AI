@@ -10,22 +10,46 @@ interface PreReadBoosterProps {
 const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart }) => {
   const [sessions, setSessions] = useState<PreReadSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const fetchSessions = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch('/api/booster/sessions', { cache: 'no-store' });
+      if (response.ok) {
+        setSessions(await response.json());
+      } else {
+        const payload = await response.json().catch(() => ({ error: 'Failed to fetch sessions' }));
+        setError(payload.error || 'Failed to fetch sessions');
+      }
+    } catch (err) {
+      console.error("Failed to fetch sessions", err);
+      setError('Failed to fetch sessions');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchSessions = async () => {
-      try {
-        const response = await fetch('/api/booster/sessions');
-        if (response.ok) {
-          setSessions(await response.json());
-        }
-      } catch (err) {
-        console.error("Failed to fetch sessions", err);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchSessions();
   }, []);
+
+  const startBooster = async (session: PreReadSession) => {
+    try {
+      await fetch(`/api/materials/${session.id}/progress/open`, { method: "POST" });
+      setSessions((prev) =>
+        prev.map((item) =>
+          item.id === session.id
+            ? { ...item, progress: Math.max(item.progress || 0, 30), status: "in_progress" }
+            : item
+        )
+      );
+    } catch (error) {
+      console.error("Failed to mark pre-read as opened", error);
+    }
+    onStart(session);
+  };
 
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -46,6 +70,16 @@ const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart }) => {
           <div className="space-y-6">
             {loading ? (
               <div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-moodle-blue"></div></div>
+            ) : error ? (
+              <div className="moodle-card p-6 border border-rose-200 bg-rose-50 text-center space-y-3">
+                <p className="text-sm text-rose-700">{error}</p>
+                <button
+                  onClick={fetchSessions}
+                  className="px-3 py-2 rounded border border-rose-300 text-xs font-bold text-rose-700 hover:bg-rose-100"
+                >
+                  Retry
+                </button>
+              </div>
             ) : sessions.length > 0 ? sessions.map((session) => (
               <div key={session.id} className="moodle-card p-6 hover:border-moodle-blue transition-all group">
                 <div className="flex justify-between items-start mb-6">
@@ -99,7 +133,7 @@ const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart }) => {
                     </div>
                   </div>
                   <button 
-                    onClick={() => onStart(session)}
+                    onClick={() => startBooster(session)}
                     className="moodle-btn-primary flex items-center space-x-2 text-sm shadow-sm"
                   >
                     <span>{session.status === 'not_started' ? 'Start Booster' : 'Continue'}</span>

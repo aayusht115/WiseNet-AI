@@ -1,11 +1,9 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   LayoutDashboard, 
   CalendarDays, 
   FileText, 
-  BrainCircuit, 
-  BarChart3, 
   Search, 
   Bell, 
   UserCircle,
@@ -14,12 +12,13 @@ import {
   PieChart,
   Users,
   Menu,
-  X,
   MessageSquare,
   ChevronRight,
   Home,
   GraduationCap,
-  BookOpen
+  BookOpen,
+  Clock3,
+  RotateCcw
 } from 'lucide-react';
 import { NavigationTab, UserRole, User } from '../types';
 
@@ -69,11 +68,52 @@ const SidebarItem: React.FC<{
 );
 
 const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout }) => {
+  const TIME_OVERRIDE_KEY = "wisenet_time_override";
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isTimeDialogOpen, setIsTimeDialogOpen] = useState(false);
+  const [activeTimeOverride, setActiveTimeOverride] = useState<string>("");
+  const [timeInputValue, setTimeInputValue] = useState<string>("");
+
+  const toLocalDateTimeInput = (isoString: string) => {
+    const parsed = new Date(isoString);
+    if (Number.isNaN(parsed.getTime())) return "";
+    const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+    return local.toISOString().slice(0, 16);
+  };
+
+  useEffect(() => {
+    const stored = localStorage.getItem(TIME_OVERRIDE_KEY) || "";
+    setActiveTimeOverride(stored);
+    setTimeInputValue(stored ? toLocalDateTimeInput(stored) : "");
+  }, []);
+
+  const saveTimeOverride = () => {
+    if (!timeInputValue) return;
+    const parsed = new Date(timeInputValue);
+    if (Number.isNaN(parsed.getTime())) return;
+    const iso = parsed.toISOString();
+    localStorage.setItem(TIME_OVERRIDE_KEY, iso);
+    setActiveTimeOverride(iso);
+    window.dispatchEvent(new CustomEvent("wisenet-time-override-updated"));
+    setIsTimeDialogOpen(false);
+  };
+
+  const resetTimeOverride = () => {
+    localStorage.removeItem(TIME_OVERRIDE_KEY);
+    setActiveTimeOverride("");
+    setTimeInputValue("");
+    window.dispatchEvent(new CustomEvent("wisenet-time-override-updated"));
+    setIsTimeDialogOpen(false);
+  };
 
   const getBreadcrumbs = () => {
-    const crumbs = [{ label: 'Home', tab: NavigationTab.DASHBOARD }];
+    const crumbs = [
+      {
+        label: 'Home',
+        tab: role === "faculty" ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD,
+      },
+    ];
     
     switch (activeTab) {
       case NavigationTab.DASHBOARD:
@@ -85,6 +125,9 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
         crumbs.push({ label: 'My Courses', tab: NavigationTab.DASHBOARD });
         crumbs.push({ label: 'Pre-read Booster', tab: NavigationTab.BOOSTER });
         break;
+      case NavigationTab.CALENDAR:
+        crumbs.push({ label: 'Course Calendar', tab: NavigationTab.CALENDAR });
+        break;
       case NavigationTab.PLANNER:
         crumbs.push({ label: 'Smart Planner', tab: NavigationTab.PLANNER });
         break;
@@ -92,14 +135,11 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
         crumbs.push({ label: 'Learning Analytics', tab: NavigationTab.REPORTS });
         break;
       case NavigationTab.FACULTY_SETUP:
-        crumbs.push({ label: 'Home', tab: NavigationTab.FACULTY_SETUP });
         break;
       case NavigationTab.COURSE_EDITOR:
-        crumbs.push({ label: 'Home', tab: NavigationTab.FACULTY_SETUP });
         crumbs.push({ label: 'Add a new course', tab: NavigationTab.COURSE_EDITOR });
         break;
       case NavigationTab.COURSE_MANAGEMENT:
-        crumbs.push({ label: 'Home', tab: NavigationTab.FACULTY_SETUP });
         crumbs.push({ label: 'Course Management', tab: NavigationTab.COURSE_MANAGEMENT });
         break;
       case NavigationTab.FACULTY_ANALYTICS:
@@ -122,7 +162,12 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
             <Menu size={20} />
           </button>
           
-          <div className="flex items-center space-x-2 cursor-pointer" onClick={() => onTabChange(NavigationTab.DASHBOARD)}>
+          <div
+            className="flex items-center space-x-2 cursor-pointer"
+            onClick={() =>
+              onTabChange(role === "faculty" ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD)
+            }
+          >
             <div className="w-8 h-8 bg-moodle-blue rounded flex items-center justify-center text-white">
               <GraduationCap size={20} />
             </div>
@@ -130,20 +175,30 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
           </div>
 
           <nav className="hidden md:flex items-center ml-4">
-            <NavItem 
-              label="Home" 
-              active={activeTab === NavigationTab.DASHBOARD} 
-              onClick={() => onTabChange(NavigationTab.DASHBOARD)} 
+            <NavItem
+              label="Home"
+              active={role === "student" ? activeTab === NavigationTab.DASHBOARD : activeTab === NavigationTab.FACULTY_SETUP}
+              onClick={() =>
+                onTabChange(role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_SETUP)
+              }
             />
-            <NavItem 
-              label="Dashboard" 
-              active={activeTab === NavigationTab.DASHBOARD} 
-              onClick={() => onTabChange(NavigationTab.DASHBOARD)} 
-            />
-            <NavItem 
-              label="My courses" 
-              active={activeTab === NavigationTab.BOOSTER} 
-              onClick={() => onTabChange(NavigationTab.BOOSTER)} 
+            {role === "faculty" && (
+              <NavItem
+                label="Dashboard"
+                active={activeTab === NavigationTab.FACULTY_ANALYTICS}
+                onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
+              />
+            )}
+            <NavItem
+              label="My courses"
+              active={
+                role === "student"
+                  ? activeTab === NavigationTab.COURSE_MANAGEMENT
+                  : activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT
+              }
+              onClick={() =>
+                onTabChange(role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_SETUP)
+              }
             />
           </nav>
         </div>
@@ -157,6 +212,19 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
               className="bg-transparent border-none focus:ring-0 text-sm w-32 outline-none"
             />
           </div>
+
+          <button
+            onClick={() => setIsTimeDialogOpen((prev) => !prev)}
+            className={`px-2.5 py-1.5 rounded-md border text-xs font-semibold transition-colors inline-flex items-center gap-1.5 ${
+              activeTimeOverride
+                ? "border-amber-300 bg-amber-50 text-amber-700"
+                : "border-slate-300 text-slate-600 hover:bg-slate-50"
+            }`}
+            title="Set test time for feedback/todo checks"
+          >
+            <Clock3 size={14} />
+            {activeTimeOverride ? "Custom Time" : "Time"}
+          </button>
 
           <button className="p-2 text-slate-500 hover:text-moodle-blue transition-colors relative">
             <Bell size={20} />
@@ -199,6 +267,54 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
         </div>
       </header>
 
+      {isTimeDialogOpen ? (
+        <div className="absolute right-4 top-16 w-80 bg-white rounded-lg border border-slate-200 shadow-xl p-4 z-50 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-bold text-slate-800">Dashboard Time Settings</p>
+            <button
+              onClick={() => setIsTimeDialogOpen(false)}
+              className="text-xs text-slate-500 hover:text-slate-700"
+            >
+              Close
+            </button>
+          </div>
+          <p className="text-xs text-slate-500">
+            System time: {new Date().toLocaleString()}
+          </p>
+          <label className="text-xs font-semibold text-slate-700 block">
+            Custom test time
+            <input
+              type="datetime-local"
+              value={timeInputValue}
+              onChange={(event) => setTimeInputValue(event.target.value)}
+              className="mt-1 w-full border border-slate-300 rounded px-2 py-1.5 text-xs"
+            />
+          </label>
+          {activeTimeOverride ? (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+              Active override: {new Date(activeTimeOverride).toLocaleString()}
+            </p>
+          ) : (
+            <p className="text-xs text-slate-500">No override active. Feedback checks use live current time.</p>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={saveTimeOverride}
+              className="px-3 py-1.5 bg-slate-900 text-white rounded text-xs font-bold"
+            >
+              Save custom time
+            </button>
+            <button
+              onClick={resetTimeOverride}
+              className="px-3 py-1.5 border border-slate-300 rounded text-xs font-semibold text-slate-700 inline-flex items-center gap-1"
+            >
+              <RotateCcw size={12} />
+              Reset to current
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-1 overflow-hidden">
         {/* Moodle Sidebar */}
         <aside 
@@ -209,40 +325,18 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
           <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto">
             {role === 'student' ? (
               <>
-                <SidebarItem 
-                  icon={<Home size={18} />} 
-                  label="Home" 
+                <SidebarItem
+                  icon={<LayoutDashboard size={18} />}
+                  label="Dashboard"
                   active={activeTab === NavigationTab.DASHBOARD}
                   onClick={() => onTabChange(NavigationTab.DASHBOARD)}
                 />
-                <SidebarItem 
-                  icon={<LayoutDashboard size={18} />} 
-                  label="Dashboard" 
-                  active={activeTab === NavigationTab.DASHBOARD}
+                <SidebarItem
+                  icon={<BookOpen size={18} />}
+                  label="My courses"
+                  active={activeTab === NavigationTab.COURSE_MANAGEMENT}
                   onClick={() => onTabChange(NavigationTab.DASHBOARD)}
                 />
-                <SidebarItem 
-                  icon={<BookOpen size={18} />} 
-                  label="My courses" 
-                  active={activeTab === NavigationTab.BOOSTER}
-                  onClick={() => onTabChange(NavigationTab.BOOSTER)}
-                />
-                
-                <div className="pt-4 pb-2 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider">My courses</div>
-                <div className="space-y-1 px-2">
-                  <button className="w-full flex items-center space-x-2 px-2 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded transition-colors text-left">
-                    <div className="w-2 h-2 bg-moodle-blue rounded-full shrink-0"></div>
-                    <span className="truncate">Business Communication - I</span>
-                  </button>
-                  <button className="w-full flex items-center space-x-2 px-2 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded transition-colors text-left">
-                    <div className="w-2 h-2 bg-moodle-orange rounded-full shrink-0"></div>
-                    <span className="truncate">Business Policy & Strategy - I</span>
-                  </button>
-                  <button className="w-full flex items-center space-x-2 px-2 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded transition-colors text-left">
-                    <div className="w-2 h-2 bg-green-500 rounded-full shrink-0"></div>
-                    <span className="truncate">Decision Analysis Simulation</span>
-                  </button>
-                </div>
 
                 <div className="pt-4 pb-2 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider">AI Enhancements</div>
                 <SidebarItem 
@@ -251,17 +345,17 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                   active={activeTab === NavigationTab.BOOSTER || activeTab === NavigationTab.LEARN_MODE || activeTab === NavigationTab.QUIZ}
                   onClick={() => onTabChange(NavigationTab.BOOSTER)}
                 />
-                <SidebarItem 
-                  icon={<CalendarDays size={18} />} 
-                  label="Smart Planner" 
+                <SidebarItem
+                  icon={<CalendarDays size={18} />}
+                  label="Calendar"
+                  active={activeTab === NavigationTab.CALENDAR}
+                  onClick={() => onTabChange(NavigationTab.CALENDAR)}
+                />
+                <SidebarItem
+                  icon={<CalendarDays size={18} />}
+                  label="Smart Planner"
                   active={activeTab === NavigationTab.PLANNER}
                   onClick={() => onTabChange(NavigationTab.PLANNER)}
-                />
-                <SidebarItem 
-                  icon={<BarChart3 size={18} />} 
-                  label="Learning Insights" 
-                  active={activeTab === NavigationTab.REPORTS}
-                  onClick={() => onTabChange(NavigationTab.REPORTS)}
                 />
               </>
             ) : (
@@ -275,20 +369,26 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                 <SidebarItem 
                   icon={<LayoutDashboard size={18} />} 
                   label="Dashboard" 
-                  active={activeTab === NavigationTab.DASHBOARD}
-                  onClick={() => onTabChange(NavigationTab.DASHBOARD)}
+                  active={activeTab === NavigationTab.FACULTY_ANALYTICS}
+                  onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
                 />
                 <SidebarItem 
                   icon={<BookOpen size={18} />} 
                   label="My courses" 
-                  active={false}
-                  onClick={() => {}}
+                  active={activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT}
+                  onClick={() => onTabChange(NavigationTab.FACULTY_SETUP)}
                 />
-                <SidebarItem 
-                  icon={<PieChart size={18} />} 
-                  label="Class Analytics" 
+                <SidebarItem
+                  icon={<PieChart size={18} />}
+                  label="Class Analytics"
                   active={activeTab === NavigationTab.FACULTY_ANALYTICS}
                   onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
+                />
+                <SidebarItem
+                  icon={<CalendarDays size={18} />}
+                  label="Calendar"
+                  active={activeTab === NavigationTab.CALENDAR}
+                  onClick={() => onTabChange(NavigationTab.CALENDAR)}
                 />
                 <SidebarItem 
                   icon={<Settings size={18} />} 
@@ -299,19 +399,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
               </>
             )}
           </nav>
-          
-          <div className="p-4 border-t border-slate-200">
-            <div className="bg-white rounded-lg p-3 border border-slate-200 shadow-sm">
-              <div className="flex items-center space-x-2 mb-2">
-                <BrainCircuit size={16} className="text-moodle-blue" />
-                <span className="text-xs font-bold text-slate-700">AI Assistant</span>
-              </div>
-              <p className="text-[10px] text-slate-500 leading-tight mb-2">Need help with your course material?</p>
-              <button className="w-full py-1.5 bg-moodle-blue text-white rounded text-[10px] font-semibold hover:bg-blue-700 transition-colors">
-                Ask Ekosh
-              </button>
-            </div>
-          </div>
         </aside>
 
         {/* Main Content Area */}
