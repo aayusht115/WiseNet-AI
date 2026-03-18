@@ -2,7 +2,6 @@
 import React, { useState, useRef } from 'react';
 import { FileText, Loader2, Sparkles, Copy, Check, ExternalLink, AlertCircle, Upload, X } from 'lucide-react';
 import { SummaryResult } from '../types';
-import { geminiService } from '../services/geminiService';
 
 const Summarizer: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -21,7 +20,16 @@ const Summarizer: React.FC = () => {
     setError(null);
     setSummary(null);
     try {
-      const result = await geminiService.summarizeContent(title || 'Untitled Reading', content);
+      const res = await fetch('/api/ai/summarize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title || 'Untitled Reading', content }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to summarize. Please try again.');
+      }
+      const result: SummaryResult = await res.json();
       if (!result.summary) throw new Error('No summary returned. Try pasting more content (at least a few paragraphs).');
       setSummary(result);
     } catch (err: any) {

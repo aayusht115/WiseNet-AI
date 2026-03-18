@@ -476,14 +476,6 @@ function shuffle<T>(arr: T[]): T[] {
   return copy;
 }
 
-function splitSentences(text: string) {
-  return text
-    .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 40);
-}
-
 function extractKeywords(text: string) {
   const words = text.match(/[A-Za-z][A-Za-z'-]{4,}/g) || [];
   return [...new Set(words.map((w) => w.trim()))].filter(
@@ -736,53 +728,154 @@ function stripLeadingBoilerplate(text: string): string {
   return stripped.length > 200 ? stripped : text;
 }
 
-/**
- * Smart-sample a document so the summarisation model receives the most
- * informative portion within its token budget.
- * Priority: beginning (intro/abstract) >> end (conclusion) >> middle.
- */
-function sampleForSummarization(text: string, maxChars = 3600): string {
-  if (text.length <= maxChars) return text;
-  const head = Math.floor(maxChars * 0.65);
-  const tail = maxChars - head;
-  return text.slice(0, head) + "\n\n[...]\n\n" + text.slice(-tail);
+// ---------------------------------------------------------------------------
+// Summariser helpers (ported from TTS Space)
+// ---------------------------------------------------------------------------
+
+/** Estimate token count: ~4 chars per token */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/** Split text on sentence boundaries */
+function splitSentences(text: string): string[] {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return [];
+  return cleaned.split(/(?<=[.!?])\s+/).filter((s) => s.trim());
+}
+
+/** Break a single oversized unit into word-capped sub-chunks */
+function splitOversizedUnit(unit: string, maxTokens: number): string[] {
+  unit = unit.trim();
+  if (!unit) return [];
+  const words = unit.split(" ");
+  const wordsPerChunk = Math.max(40, Math.floor(maxTokens * 0.72));
+  const chunks: string[] = [];
+  for (let i = 0; i < words.length; i += wordsPerChunk) {
+    const chunk = words.slice(i, i + wordsPerChunk).join(" ").trim();
+    if (chunk) chunks.push(chunk);
+  }
+  return chunks;
+}
+
+/** Split text into token-budget chunks, respecting sentence boundaries */
+function chunkTextForModel(text: string, tokenBudget: number): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const sentences = splitSentences(normalized);
+  const units = sentences.length > 0 ? sentences : [normalized];
+  const chunks: string[] = [];
+  let currentUnits: string[] = [];
+  let currentTokens = 0;
+  for (const unit of units) {
+    const unitTokens = estimateTokens(unit);
+    if (unitTokens > tokenBudget) {
+      if (currentUnits.length > 0) {
+        chunks.push(currentUnits.join(" ").trim());
+        currentUnits = [];
+        currentTokens = 0;
+      }
+      chunks.push(...splitOversizedUnit(unit, tokenBudget));
+      continue;
+    }
+    if (currentUnits.length > 0 && currentTokens + unitTokens > tokenBudget) {
+      chunks.push(currentUnits.join(" ").trim());
+      currentUnits = [unit];
+      currentTokens = unitTokens;
+    } else {
+      currentUnits.push(unit);
+      currentTokens += unitTokens;
+    }
+  }
+  if (currentUnits.length > 0) chunks.push(currentUnits.join(" ").trim());
+  return chunks.filter((c) => c);
+}
+
+/** Ensure text ends with a complete sentence */
+function ensureCompleteSentence(text: string): string {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  if ([".","!","?"].includes(cleaned[cleaned.length - 1])) return cleaned;
+  const lastPunc = Math.max(cleaned.lastIndexOf("."), cleaned.lastIndexOf("!"), cleaned.lastIndexOf("?"));
+  if (lastPunc >= cleaned.length * 0.55) return cleaned.slice(0, lastPunc + 1).trim();
+  return `${cleaned}.`;
+}
+
+/** Detect obviously bad/low-quality model output */
+function isLowQualitySummary(sourceText: string, summaryText: string): boolean {
+  const summary = summaryText.trim();
+  if (!summary) return true;
+  if (summary.toLowerCase().includes("<unk>")) return true;
+  if (/^(the text|this text|the document)\b/i.test(summary)) return true;
+  const outWords = summary.split(" ");
+  const srcWords = sourceText.split(" ");
+  if (outWords.length < 4) return true;
+  if (srcWords.length >= 12 && outWords.length >= srcWords.length) return true;
+  const uniqueRatio = new Set(outWords).size / Math.max(1, outWords.length);
+  if (outWords.length >= 12 && uniqueRatio < 0.35) return true;
+  return false;
+}
+
+/** Target word count for output based on detail level */
+function resolveTargetWords(
+  detailLevel: "Brief" | "Standard" | "Detailed",
+  sourceWordCount: number
+): number {
+  if (detailLevel === "Brief") {
+    return Math.max(90, Math.min(190, Math.floor(sourceWordCount * 0.15)));
+  }
+  if (detailLevel === "Detailed") {
+    return Math.max(220, Math.min(440, Math.floor(sourceWordCount * 0.36)));
+  }
+  return Math.max(150, Math.min(330, Math.floor(sourceWordCount * 0.24)));
+}
+
+/** Target words per chunk when processing in sections */
+function targetWordsForChunk(maxLenWords: number, chunkCount: number): number {
+  const scaleBase = Math.max(1, Math.min(chunkCount, 6));
+  return Math.max(46, Math.min(180, Math.floor((maxLenWords * 1.8) / scaleBase)));
 }
 
 /**
- * Primary summariser — uses facebook/bart-large-cnn via the HuggingFace
- * Inference API (free tier, just needs a read token from huggingface.co).
- *
- * Set HUGGINGFACE_API_KEY in your .env file.
- * Optionally override the model with HF_MODEL (must be a summarization pipeline).
+ * Single HuggingFace chat-completions call for one piece of text.
+ * Uses router.huggingface.co/v1/chat/completions (the new endpoint).
  */
-async function summarizeWithAI(title: string, content: string): Promise<SummaryPayload> {
-  const token = process.env.HUGGINGFACE_API_KEY;
-  if (!token) throw new Error("HUGGINGFACE_API_KEY not configured");
+async function hfChatSummarize(
+  text: string,
+  targetWords: number,
+  phase: "full" | "chunk" | "merge",
+  model: string,
+  token: string
+): Promise<string> {
+  const systemMsg =
+    "You are a precise summarizer. Preserve key facts, chronology, and speaker perspective. " +
+    "Do not add or change meaning. Preserve the source narrative person (first/second/third).";
 
-  const model = process.env.HF_MODEL || "facebook/bart-large-cnn";
-  const url = `https://api-inference.huggingface.co/models/${model}`;
+  let taskMsg: string;
+  if (phase === "chunk") {
+    taskMsg = `Summarize this section from a longer document in about ${targetWords} words. Keep important entities, facts, and chronology.`;
+  } else if (phase === "merge") {
+    taskMsg = `Write one coherent paragraph in about ${targetWords} words that summarizes the whole document using the provided section summaries. Keep context and key points intact.`;
+  } else {
+    taskMsg = `Summarize the following text in about ${targetWords} words. Keep the central message and context intact.`;
+  }
 
-  const cleaned = stripLeadingBoilerplate(content);
-  const inputText = sampleForSummarization(cleaned);
+  const userMsg = `${taskMsg}\n\nText:\n${text}\n\nSummary:`;
 
-  const res = await fetch(url, {
+  const res = await fetch("https://router.huggingface.co/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      inputs: inputText,
-      parameters: {
-        max_length: 380,
-        min_length: 80,
-        do_sample: false,
-        truncation: true,
-      },
-      options: {
-        // Ask HF to wait for the model to warm up instead of returning 503
-        wait_for_model: true,
-      },
+      model,
+      messages: [
+        { role: "system", content: systemMsg },
+        { role: "user", content: userMsg },
+      ],
+      max_tokens: Math.max(64, Math.floor(targetWords * 1.5)),
+      temperature: 0,
     }),
   });
 
@@ -792,16 +885,88 @@ async function summarizeWithAI(title: string, content: string): Promise<SummaryP
   }
 
   const data = (await res.json()) as any;
-  // bart-large-cnn returns [{ summary_text: "..." }]
-  const summaryText = Array.isArray(data) ? data[0]?.summary_text : data?.summary_text;
-  if (!summaryText) throw new Error("No summary returned by HuggingFace model");
+  const raw: string = data?.choices?.[0]?.message?.content ?? "";
+  // Strip any "Summary:" prefix the model might echo back
+  return raw.replace(/^(summary|tl;dr)\s*:\s*/i, "").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Primary summariser
+// ---------------------------------------------------------------------------
+
+/**
+ * Summarises content using HuggingFace chat completions (router.huggingface.co).
+ * Features: proper chunking + merge, quality validation, fallback to TF-IDF.
+ *
+ * Set HF_TOKEN in .env.local.
+ * Override model with HF_MODEL env var (must be a chat/instruct model on HF router).
+ */
+async function summarizeWithAI(
+  title: string,
+  content: string,
+  detailLevel: "Brief" | "Standard" | "Detailed" = "Standard"
+): Promise<SummaryPayload> {
+  const token = process.env.HF_TOKEN;
+  if (!token) throw new Error("HF_TOKEN not configured");
+
+  const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
+  const cleaned = stripLeadingBoilerplate(content);
+  const sourceWordCount = cleaned.split(/\s+/).length;
+  const maxLenWords = resolveTargetWords(detailLevel, sourceWordCount);
+
+  // ~3000 token budget per chunk (leaves room for system + task prompts)
+  const TOKEN_BUDGET = 3000;
+  const sourceTokens = estimateTokens(cleaned);
+
+  let summaryText: string;
+
+  if (sourceTokens <= TOKEN_BUDGET) {
+    // Fits in one shot
+    summaryText = await hfChatSummarize(cleaned, Math.max(50, Math.min(340, maxLenWords)), "full", model, token);
+  } else {
+    // Chunk → summarise each → merge
+    const chunks = chunkTextForModel(cleaned, TOKEN_BUDGET);
+    const perChunkTarget = targetWordsForChunk(maxLenWords, chunks.length);
+    const partials: string[] = [];
+
+    for (const chunk of chunks) {
+      const chunkSummary = await hfChatSummarize(chunk, perChunkTarget, "chunk", model, token);
+      if (chunkSummary) partials.push(chunkSummary);
+    }
+
+    let merged = partials.join(" ").trim();
+
+    // Collapse rounds if merged partials are still too long
+    let collapseRound = 0;
+    while (estimateTokens(merged) > TOKEN_BUDGET && collapseRound < 2) {
+      collapseRound++;
+      const mergeChunks = chunkTextForModel(merged, TOKEN_BUDGET);
+      const mergeTarget = Math.max(60, Math.min(220, targetWordsForChunk(maxLenWords, mergeChunks.length)));
+      const nextPartials: string[] = [];
+      for (const mc of mergeChunks) {
+        const s = await hfChatSummarize(mc, mergeTarget, "merge", model, token);
+        if (s) nextPartials.push(s);
+      }
+      merged = nextPartials.join(" ").trim();
+    }
+
+    // Final pass over merged partials
+    summaryText = await hfChatSummarize(merged, Math.max(40, Math.min(220, maxLenWords)), "merge", model, token);
+  }
+
+  summaryText = ensureCompleteSentence(summaryText);
+
+  // Quality gate — if output is bad, throw so the caller falls back to TF-IDF
+  if (isLowQualitySummary(cleaned, summaryText)) {
+    throw new Error("HuggingFace returned low-quality summary — falling back to TF-IDF");
+  }
 
   // Use TF-IDF on the cleaned full text for key takeaways & further reading
   const tfidf = buildTFIDFSummaryPayload(title, cleaned);
 
   return {
     title,
-    summary: String(summaryText),
+    summary: summaryText,
     keyTakeaways: tfidf.keyTakeaways.length >= 3 ? tfidf.keyTakeaways.slice(0, 5) : tfidf.keyTakeaways,
     furtherReading: tfidf.furtherReading.slice(0, 3),
   };
@@ -2976,7 +3141,7 @@ async function startServer() {
     try {
       summary = await summarizeWithAI(String(title), materialContent);
     } catch (error) {
-      console.error("Gemini summarize failed during material upload, falling back to TF-IDF", error);
+      console.error("HuggingFace summarize failed during material upload, falling back to TF-IDF", error);
       summary = buildFallbackSummaryPayload(String(title), materialContent);
     }
     const quizSource = `${summary.summary || ""}. ${(summary.keyTakeaways || []).join(". ")}`.trim();
