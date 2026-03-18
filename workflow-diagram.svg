@@ -1,0 +1,4 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='220' height='120'>
+  <rect x='10' y='10' width='200' height='100' fill='#f8fafc' stroke='#334155'/>
+  <text x='110' y='65' text-anchor='middle' font-family='Arial' font-size='16' fill='#0f172a'>Test</text>
+</svg>

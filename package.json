@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
+    "start": "NODE_ENV=production tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
@@ -13,11 +14,13 @@
     "@google/genai": "^1.40.0",
     "@tailwindcss/vite": "^4.2.1",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.6.2",
     "cookie-parser": "^1.4.7",
+    "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.563.0",
+    "pdf-parse": "^1.1.1",
+    "pg": "^8.19.0",
     "postcss": "^8.5.6",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -27,6 +30,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
+    "@types/pg": "^8.16.0",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
