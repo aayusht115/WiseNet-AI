@@ -1,7 +1,11 @@
 import "./env";
 import express from "express";
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 // @ts-ignore – import lib path directly to avoid pdf-parse's startup test-file load
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
 import { createServer as createViteServer } from "vite";
@@ -16,6 +20,7 @@ const PORT = Number(process.env.PORT || 3000);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const execFileAsync = promisify(execFile);
 
 type SummaryPayload = {
   title: string;
@@ -432,7 +437,11 @@ function normalizeExtractedPdfText(value: any): string {
     .replace(/\u0000/g, " ")
     .replace(/[^\x20-\x7E\n\r\t]/g, " ")
     .replace(/\\+/g, " ")
-    .replace(/\s+/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -462,10 +471,153 @@ function isLikelyReadableExtractedText(value: string): boolean {
   return true;
 }
 
+function countVisualReferences(text: string): number {
+  return (String(text || "").match(/\b(exhibits?|figures?|tables?|charts?)\s+[a-z0-9-]+/gi) || []).length;
+}
+
+function extractVisualReferenceDigest(text: string, maxChars = 1800): string {
+  const cleaned = normalizeExtractedPdfText(cleanOCRText(text));
+  if (!cleaned) return "";
+
+  const lines = cleaned
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const captions = Array.from(
+    new Set(
+      lines
+        .filter((line) => /^(exhibit|figure|table|chart)\s+[a-z0-9-]+/i.test(line))
+        .map((line) => clipText(line, 220))
+    )
+  ).slice(0, 18);
+
+  const paragraphs = cleaned
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 50);
+
+  const mentionParagraphs = Array.from(
+    new Set(
+      paragraphs.filter((paragraph) => /\b(exhibits?|figures?|tables?|charts?)\b/i.test(paragraph))
+    )
+  );
+
+  const sections: string[] = [];
+  if (captions.length > 0) {
+    sections.push(`VISUAL REFERENCES:\n- ${captions.join("\n- ")}`);
+  }
+
+  if (mentionParagraphs.length > 0) {
+    const snippets: string[] = [];
+    let used = 0;
+    for (const paragraph of mentionParagraphs) {
+      const clipped = clipText(paragraph, 420);
+      if (used + clipped.length > maxChars) break;
+      snippets.push(clipped);
+      used += clipped.length + 2;
+      if (snippets.length >= 8) break;
+    }
+    if (snippets.length > 0) {
+      sections.push(`WHAT THE TEXT SAYS ABOUT THE VISUALS:\n${snippets.join("\n\n")}`);
+    }
+  }
+
+  return sections.join("\n\n").slice(0, maxChars).trim();
+}
+
+function mergePdfExtractions(primaryText: string, visionText: string): string {
+  const primary = normalizeExtractedPdfText(primaryText);
+  const vision = normalizeExtractedPdfText(visionText);
+  if (!vision) return primary;
+  if (!primary) return vision;
+
+  const primaryReadable = isLikelyReadableExtractedText(primary);
+  const visionDigest = extractVisualReferenceDigest(vision, 2400);
+  if (primaryReadable) {
+    if (!visionDigest) return primary;
+    const primaryLower = primary.toLowerCase();
+    const uniqueDigestLines = visionDigest
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 10 && !primaryLower.includes(line.toLowerCase()));
+    if (uniqueDigestLines.length === 0) return primary;
+    return `${primary}\n\nVISUAL OCR NOTES:\n${uniqueDigestLines.join("\n")}`.trim();
+  }
+
+  const combinedSections = [primary, vision];
+  return combinedSections
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 120000)
+    .trim();
+}
+
+async function extractPdfTextWithVisionOCR(sourceFileBase64: string, maxPages = 18): Promise<string> {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "wisenet-pdf-ocr-"));
+  const pdfPath = path.join(tempDir, "source.pdf");
+  const swiftScript = path.join(__dirname, "scripts", "pdf_ocr.swift");
+
+  try {
+    await fs.writeFile(pdfPath, Buffer.from(sourceFileBase64, "base64"));
+    const moduleCachePath = path.join(tempDir, "module-cache");
+    const { stdout } = await execFileAsync(
+      "/usr/bin/swift",
+      [swiftScript, pdfPath, String(maxPages)],
+      {
+        timeout: 120000,
+        maxBuffer: 8 * 1024 * 1024,
+        env: {
+          ...process.env,
+          CLANG_MODULE_CACHE_PATH: moduleCachePath,
+          SWIFT_MODULECACHE_PATH: moduleCachePath,
+        },
+      }
+    );
+    const payload = safeJson(stdout, {}) as {
+      pages?: { pageNumber?: number; pdfText?: string; ocrText?: string }[];
+    };
+    const pageBlocks = Array.isArray(payload.pages) ? payload.pages : [];
+    return pageBlocks
+      .map((page) => {
+        const pageNumber = Number(page?.pageNumber || 0);
+        const pdfText = normalizeExtractedPdfText(page?.pdfText || "");
+        const ocrText = normalizeExtractedPdfText(page?.ocrText || "");
+        const parts = [pdfText];
+        if (ocrText && !pdfText.toLowerCase().includes(ocrText.toLowerCase().slice(0, 80))) {
+          parts.push(ocrText);
+        }
+        if (parts.filter(Boolean).length === 0) return "";
+        return `Page ${pageNumber || "?"}\n${parts.filter(Boolean).join("\n\n")}`.trim();
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
   const buffer = Buffer.from(sourceFileBase64, "base64");
   const data = await pdfParse(buffer);
-  return String(data.text || "");
+  const extractedText = String(data.text || "");
+  const normalizedExtracted = normalizeExtractedPdfText(extractedText);
+  const shouldRunVisionOcr =
+    !isLikelyReadableExtractedText(normalizedExtracted) || countVisualReferences(normalizedExtracted) >= 2;
+
+  if (!shouldRunVisionOcr) {
+    return extractedText;
+  }
+
+  try {
+    const visionText = await extractPdfTextWithVisionOCR(
+      sourceFileBase64,
+      countVisualReferences(normalizedExtracted) >= 2 ? 18 : 10
+    );
+    return mergePdfExtractions(extractedText, visionText);
+  } catch (error) {
+    console.warn("Vision OCR PDF extraction failed; using text extraction only.", error);
+    return extractedText;
+  }
 }
 
 function shuffle<T>(arr: T[]): T[] {
@@ -788,7 +940,7 @@ async function generateQuizWithQwen(
 
   const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
   const hfUrl = "https://router.huggingface.co/v1/chat/completions";
-  const docContext = sampleForSummarization(cleanOCRText(content), 4000);
+  const docContext = buildSummaryInputContext(cleanOCRText(content), 4000);
 
   const systemMsg = `You are a quiz writer creating multiple-choice questions for an academic reading titled "${title}".
 
@@ -876,9 +1028,146 @@ function stripLeadingBoilerplate(text: string): string {
  */
 function sampleForSummarization(text: string, maxChars = 3600): string {
   if (text.length <= maxChars) return text;
-  const head = Math.floor(maxChars * 0.65);
-  const tail = maxChars - head;
-  return text.slice(0, head) + "\n\n[...]\n\n" + text.slice(-tail);
+  const normalized = normalizeExtractedPdfText(text);
+  const paragraphs = normalized
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 40);
+  if (paragraphs.length <= 4) {
+    const head = Math.floor(maxChars * 0.65);
+    const tail = maxChars - head;
+    return normalized.slice(0, head) + "\n\n[...]\n\n" + normalized.slice(-tail);
+  }
+
+  const introBudget = Math.floor(maxChars * 0.45);
+  const visualBudget = Math.floor(maxChars * 0.2);
+  const tailBudget = Math.floor(maxChars * 0.25);
+  const bridgeBudget = Math.max(maxChars - introBudget - visualBudget - tailBudget, 0);
+
+  const intro: string[] = [];
+  let introSize = 0;
+  for (const paragraph of paragraphs) {
+    if (introSize + paragraph.length > introBudget) break;
+    intro.push(paragraph);
+    introSize += paragraph.length + 2;
+  }
+
+  const visualParagraphs = paragraphs.filter((paragraph) =>
+    /\b(exhibits?|figures?|tables?|charts?)\b/i.test(paragraph)
+  );
+  const visuals: string[] = [];
+  let visualSize = 0;
+  for (const paragraph of visualParagraphs) {
+    if (visualSize + paragraph.length > visualBudget) break;
+    visuals.push(paragraph);
+    visualSize += paragraph.length + 2;
+    if (visuals.length >= 4) break;
+  }
+
+  const tail: string[] = [];
+  let tailSize = 0;
+  for (const paragraph of [...paragraphs].reverse()) {
+    if (tailSize + paragraph.length > tailBudget) break;
+    tail.unshift(paragraph);
+    tailSize += paragraph.length + 2;
+    if (tail.length >= 3) break;
+  }
+
+  const usedParagraphs = new Set([...intro, ...visuals, ...tail]);
+  const bridge: string[] = [];
+  let bridgeSize = 0;
+  for (const paragraph of paragraphs) {
+    if (usedParagraphs.has(paragraph)) continue;
+    if (bridgeSize + paragraph.length > bridgeBudget) break;
+    bridge.push(paragraph);
+    bridgeSize += paragraph.length + 2;
+    if (bridge.length >= 3) break;
+  }
+
+  return [...intro, ...visuals, ...bridge, ...tail]
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, maxChars)
+    .trim();
+}
+
+function buildSummaryInputContext(text: string, maxChars = 3600, focusPrompt = ""): string {
+  const cleaned = stripLeadingBoilerplate(text);
+  const targetedVisualContext = focusPrompt.trim()
+    ? buildExhibitAwareContext(cleaned, focusPrompt, 2200)
+    : "";
+  const visualDigest = targetedVisualContext || extractVisualReferenceDigest(cleaned, 1800);
+  const wantsVisuals = /\b(exhibits?|figures?|tables?|charts?|visuals?)\b/i.test(focusPrompt);
+  const hasVisuals = countVisualReferences(cleaned) > 0 || Boolean(visualDigest);
+
+  if (!hasVisuals) {
+    return sampleForSummarization(cleaned, maxChars);
+  }
+
+  const visualBudget = wantsVisuals ? 1800 : 1200;
+  const digest = extractVisualReferenceDigest(cleaned, visualBudget);
+  if (!digest) {
+    return sampleForSummarization(cleaned, maxChars);
+  }
+
+  const baseBudget = Math.max(maxChars - Math.min(digest.length + 120, Math.floor(maxChars * 0.35)), 1800);
+  const mainSample = sampleForSummarization(cleaned, baseBudget);
+  return `${mainSample}\n\nVISUAL APPENDIX:\n${digest}`.trim();
+}
+
+function buildExhibitAwareContext(text: string, userMessage: string, maxChars = 6500): string {
+  if (!text.trim()) return "";
+  if (!/\b(exhibits?|figures?|tables?|charts?)\b/i.test(userMessage)) return "";
+
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 30);
+
+  const queryRefs = Array.from(
+    userMessage.matchAll(/\b(exhibits?|figures?|tables?|charts?)\s*([a-z0-9-]+)/gi)
+  ).map((match) => ({
+    kind: match[1].replace(/s$/i, "").toLowerCase(),
+    id: String(match[2] || "").trim().toLowerCase(),
+  }));
+
+  const genericVisualRef = /\b(exhibit|figure|table|chart)\s+[a-z0-9-]+\b/i;
+  const queryRegexes = queryRefs.map(
+    ({ kind, id }) => new RegExp(`\\b${kind}\\s*${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")
+  );
+
+  const selected = new Set<number>();
+  const snippets: string[] = [];
+  const captions = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^\s*(exhibit|figure|table|chart)\s+[a-z0-9-]+/i.test(line))
+    .slice(0, 12);
+
+  const pushParagraph = (index: number) => {
+    if (index < 0 || index >= paragraphs.length || selected.has(index)) return;
+    selected.add(index);
+    snippets.push(paragraphs[index]);
+  };
+
+  paragraphs.forEach((paragraph, index) => {
+    const isSpecificHit = queryRegexes.length > 0 && queryRegexes.some((regex) => regex.test(paragraph));
+    const isGenericHit = queryRegexes.length === 0 && genericVisualRef.test(paragraph);
+    if (!isSpecificHit && !isGenericHit) return;
+    pushParagraph(index - 1);
+    pushParagraph(index);
+    pushParagraph(index + 1);
+  });
+
+  const body = snippets.join("\n\n").slice(0, maxChars).trim();
+  const sections: string[] = [];
+  if (captions.length > 0) {
+    sections.push(`VISUAL REFERENCES FOUND IN THE FULL DOCUMENT:\n${captions.join("\n")}`);
+  }
+  if (body) {
+    sections.push(`FULL-DOCUMENT EXCERPTS RELEVANT TO THE VISUAL QUESTION:\n"""\n${body}\n"""`);
+  }
+  return sections.join("\n\n").trim();
 }
 
 /**
@@ -1013,15 +1302,21 @@ async function summarizeWithAI(
 
   const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
   const hfUrl = "https://router.huggingface.co/v1/chat/completions";
-
   const cleaned = stripLeadingBoilerplate(content);
+
   const sampleSize = detailLevel === "Brief" ? 2800 : detailLevel === "Detailed" ? 5000 : 3800;
-  const inputText = sampleForSummarization(cleaned, sampleSize);
+  const inputText = buildSummaryInputContext(cleaned, sampleSize, focusPrompt);
   const maxTokens = detailLevel === "Brief" ? 350 : detailLevel === "Detailed" ? 800 : 550;
   const numPoints = detailLevel === "Brief" ? 3 : detailLevel === "Detailed" ? 7 : 5;
+  const focusNeedsSpecificVisual =
+    focusPrompt.trim() && /\b(exhibits?|figures?|tables?|charts?)\s*[a-z0-9-]+/i.test(focusPrompt);
 
   const focusLine = focusPrompt.trim()
-    ? `\nSPECIAL FOCUS: The user specifically wants to understand: "${focusPrompt}". Prioritise this in both the overview and the takeaways.`
+    ? `\nSPECIAL FOCUS: The user specifically wants to understand: "${focusPrompt}". Prioritise this in both the overview and the takeaways.${
+        focusNeedsSpecificVisual
+          ? " You must explain that specific exhibit/figure/table directly whenever the text references it."
+          : ""
+      }`
     : "";
 
   const systemMsg = `You are an expert academic summariser. Produce a clear, structured summary of the reading material.
@@ -1029,6 +1324,7 @@ async function summarizeWithAI(
 RULES:
 - Include SPECIFIC data: quote exact numbers, percentages, dates, names, and statistics from the text. Never use vague phrases like "various factors" or "significant impact" when specific data is available.
 - Do NOT invent information not present in the text.
+- If the reading references exhibits, figures, tables, or charts, explain what the text says they show instead of ignoring them.
 - Write numbered list items consecutively WITHOUT blank lines between them.${focusLine}
 
 FORMAT YOUR RESPONSE EXACTLY AS FOLLOWS (no extra text before or after):
@@ -1570,6 +1866,18 @@ async function startServer() {
     // Runtime migrations for session tracking columns
     await execute(`ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS session_status TEXT DEFAULT 'scheduled' CHECK (session_status IN ('scheduled','completed','cancelled','rescheduled'))`).catch(() => {});
     await execute(`ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS original_date DATE`).catch(() => {});
+    await execute(`
+      CREATE TABLE IF NOT EXISTS session_attendance (
+        id SERIAL PRIMARY KEY,
+        session_id INTEGER REFERENCES course_sessions(id) ON DELETE CASCADE,
+        student_id INTEGER REFERENCES users(id),
+        status TEXT NOT NULL CHECK (status IN ('present','absent','late','excused')),
+        note TEXT,
+        marked_by INTEGER REFERENCES users(id),
+        marked_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (session_id, student_id)
+      )
+    `).catch(() => {});
   } catch (dbError) {
     console.warn("⚠️  Database unavailable — server starting in degraded mode (DB features will return 503):", (dbError as Error).message);
   }
@@ -2448,7 +2756,9 @@ async function startServer() {
     }
     const sessions = await query<any>(
       `
-        SELECT id, course_id, session_number, title, session_date, start_time, end_time, mode
+        SELECT id, course_id, session_number, title,
+               TO_CHAR(session_date, 'YYYY-MM-DD') AS session_date,
+               start_time, end_time, mode, session_status
         FROM course_sessions
         WHERE course_id = $1
         ORDER BY session_date ASC, session_number ASC
@@ -3882,7 +4192,7 @@ async function startServer() {
     if (!userMessage) return res.status(400).json({ error: "message is required" });
 
     const material = await queryOne<any>(
-      "SELECT content, title, course_id FROM course_materials WHERE id = $1",
+      "SELECT content, title, course_id, source_type, source_file_base64 FROM course_materials WHERE id = $1",
       [materialId]
     );
     if (!material) return res.status(404).json({ error: "Material not found" });
@@ -3896,6 +4206,31 @@ async function startServer() {
     } else {
       if (!(await canManageCourse(req.user, material.course_id))) {
         return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+
+    // Lazy Vision OCR: if the user asks about exhibits/figures/tables and the stored
+    // content has no exhibit data yet, re-process the PDF with Vision OCR and cache
+    // the enriched content so future questions also benefit from it.
+    let workingContent = material.content || "";
+    const asksAboutVisuals = /\b(exhibits?|figures?|tables?|charts?|figures?)\b/i.test(userMessage);
+    const contentAlreadyEnriched = workingContent.includes("VISUAL OCR NOTES:");
+    if (
+      asksAboutVisuals &&
+      !contentAlreadyEnriched &&
+      countVisualReferences(workingContent) < 2 &&
+      material.source_type === "pdf" &&
+      material.source_file_base64
+    ) {
+      try {
+        const visionText = await extractPdfTextWithVisionOCR(material.source_file_base64, 18);
+        const merged = mergePdfExtractions(workingContent, visionText);
+        if (merged.length > workingContent.length + 100) {
+          await execute("UPDATE course_materials SET content = $1 WHERE id = $2", [merged, materialId]);
+          workingContent = merged;
+        }
+      } catch {
+        // fall through with existing content
       }
     }
 
@@ -3913,22 +4248,23 @@ async function startServer() {
       [materialId, req.user.id]
     );
 
-    // Use a larger context window so exhibit references near the end of the document are visible
-    const docContext = sampleForSummarization(cleanOCRText(material.content || ""), 5500);
+    const cleanedMaterialContent = cleanOCRText(workingContent);
+    const docContext = buildSummaryInputContext(cleanedMaterialContent, 5500, userMessage);
+    const exhibitContext = buildExhibitAwareContext(cleanedMaterialContent, userMessage, 6500);
 
     const systemContent = `You are an expert academic tutor helping a student understand a reading material titled "${material.title}".
 
-READING MATERIAL:
+READING MATERIAL SAMPLE:
 """
 ${docContext}
 """
 
-INSTRUCTIONS — follow these exactly:
+${exhibitContext ? `${exhibitContext}\n\n` : ""}INSTRUCTIONS — follow these exactly:
 1. Answer ONLY using the reading material above. Never invent or assume information not present in the text.
 2. Use SPECIFIC data — quote exact numbers, percentages, figures, names, dates, and statistics from the material whenever available.
 3. NEVER use hedging language such as "likely", "probably", "might be", "it seems", or "possibly" — state what the text says directly.
 4. EXHIBITS, TABLES, CHARTS, AND FIGURES — handle like this:
-   a. Search the full reading text carefully for any mention of the exhibit/figure/table number (e.g. "Exhibit 7", "Figure 3", "Table 2").
+   a. Use the full-document exhibit excerpts above whenever they are present, then cross-check with the reading sample.
    b. Report EXACTLY what the surrounding text says about it — description, data values, axes, comparisons, footnotes.
    c. If the exhibit is discussed across multiple paragraphs, synthesise all relevant mentions.
    d. If the document mentions the exhibit only briefly (e.g. "see Exhibit 7"), state the context in which it is referenced and what the nearby text discusses.
@@ -3939,7 +4275,8 @@ INSTRUCTIONS — follow these exactly:
    - Bullet points (- item) for unordered lists
    - A blank line between distinct sections
 7. For summarise requests: give exactly 5 key numbered points, each 1-2 sentences, each starting with a bold term.
-8. Be thorough but do not repeat the same point twice.`;
+8. Be thorough but do not repeat the same point twice.
+9. If the user asks about an exhibit and the text appears image-heavy or caption-only, explain all extractable textual references first instead of saying "no exhibits" prematurely.`;
 
     // Build OpenAI-format messages array
     const messages: { role: string; content: string }[] = [
@@ -3954,7 +4291,7 @@ INSTRUCTIONS — follow these exactly:
 
     const hfToken = process.env.HF_TOKEN;
     if (!hfToken) {
-      const payload = buildTFIDFSummaryPayload(material.title, material.content || "", "Standard");
+      const payload = buildTFIDFSummaryPayload(material.title, workingContent, "Standard");
       const reply = payload.summary || "AI is not configured on this server.";
       await execute(
         "INSERT INTO material_chat_messages (material_id, user_id, role, content) VALUES ($1, $2, 'assistant', $3)",
@@ -4062,7 +4399,7 @@ INSTRUCTIONS — follow these exactly:
     const facultyInstruction = String(req.body?.prompt || "").trim() ||
       `Generate ${count} multiple choice questions that test conceptual understanding of the key ideas in this reading.`;
 
-    const docContext = sampleForSummarization(cleanOCRText(material.content || ""), 4000);
+    const docContext = buildSummaryInputContext(cleanOCRText(material.content || ""), 4000);
 
     const hfToken = process.env.HF_TOKEN;
     if (!hfToken) return res.status(503).json({ error: "HF_TOKEN not configured" });
@@ -4444,9 +4781,10 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
       if (user.role === "faculty") {
         rows = await query<any>(
           `SELECT cs.id, cs.course_id, cs.session_number, cs.title AS session_title,
-                  cs.session_date, cs.start_time, cs.end_time, cs.mode,
+                  TO_CHAR(cs.session_date, 'YYYY-MM-DD') AS session_date,
+                  cs.start_time, cs.end_time, cs.mode,
                   COALESCE(cs.session_status, 'scheduled') AS session_status,
-                  cs.original_date,
+                  TO_CHAR(cs.original_date, 'YYYY-MM-DD') AS original_date,
                   c.name AS course_name, c.code AS course_code,
                   u.name AS faculty_name
            FROM course_sessions cs
@@ -4457,19 +4795,30 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
           [user.id]
         );
       } else {
+        const nowOverride = getNowOverride(req);
+        const today = nowOverride ? nowOverride.slice(0, 10) : new Date().toISOString().slice(0, 10);
         rows = await query<any>(
           `SELECT cs.id, cs.course_id, cs.session_number, cs.title AS session_title,
-                  cs.session_date, cs.start_time, cs.end_time, cs.mode,
+                  TO_CHAR(cs.session_date, 'YYYY-MM-DD') AS session_date,
+                  cs.start_time, cs.end_time, cs.mode,
                   COALESCE(cs.session_status, 'scheduled') AS session_status,
-                  cs.original_date,
+                  TO_CHAR(cs.original_date, 'YYYY-MM-DD') AS original_date,
                   c.name AS course_name, c.code AS course_code,
-                  u.name AS faculty_name
+                  COALESCE(u.name, c.instructor, 'Faculty TBA') AS faculty_name,
+                  CASE
+                    WHEN sa.status IS NOT NULL THEN sa.status
+                    WHEN cs.session_date < $2 THEN 'not_marked'
+                    ELSE 'scheduled'
+                  END AS attendance_status,
+                  sa.note AS attendance_note,
+                  sa.marked_at AS attendance_marked_at
            FROM course_sessions cs
            JOIN courses c ON c.id = cs.course_id
-           JOIN users u ON u.id = c.created_by
+           LEFT JOIN users u ON u.id = c.created_by
            JOIN enrollments e ON e.course_id = c.id AND e.user_id = $1
+           LEFT JOIN session_attendance sa ON sa.session_id = cs.id AND sa.student_id = $1
            ORDER BY cs.session_date, cs.start_time`,
-          [user.id]
+          [user.id, today]
         );
       }
       res.json(rows);
@@ -4534,7 +4883,8 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
       const nowOverride = getNowOverride(req);
       const today = nowOverride ? nowOverride.slice(0, 10) : new Date().toISOString().slice(0, 10);
       const rows = await query<any>(
-        `SELECT cs.id, cs.session_number, cs.title AS session_title, cs.session_date,
+        `SELECT cs.id, cs.session_number, cs.title AS session_title,
+                TO_CHAR(cs.session_date, 'YYYY-MM-DD') AS session_date,
                 c.name AS course_name, c.code AS course_code
          FROM course_sessions cs
          JOIN courses c ON c.id = cs.course_id
@@ -4560,7 +4910,8 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
       const sessionId = Number(req.params.id);
       // Verify faculty owns the session's course
       const session = await queryOne<any>(
-        `SELECT cs.id, cs.course_id, c.name AS course_name, cs.title AS session_title, cs.session_date
+        `SELECT cs.id, cs.course_id, c.name AS course_name, cs.title AS session_title,
+                TO_CHAR(cs.session_date, 'YYYY-MM-DD') AS session_date
          FROM course_sessions cs JOIN courses c ON c.id = cs.course_id
          WHERE cs.id = $1 AND c.created_by = $2`,
         [sessionId, user.id]
@@ -4662,7 +5013,8 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
       const user = req.user;
       const courseId = Number(req.params.id);
       const rows = await query<any>(
-        `SELECT cs.session_number, cs.title AS session_title, cs.session_date,
+        `SELECT cs.session_number, cs.title AS session_title,
+                TO_CHAR(cs.session_date, 'YYYY-MM-DD') AS session_date,
                 COALESCE(sa.status, 'not_marked') AS status, sa.note
          FROM course_sessions cs
          LEFT JOIN session_attendance sa ON sa.session_id = cs.id AND sa.student_id = $1

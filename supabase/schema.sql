@@ -129,8 +129,24 @@ CREATE TABLE IF NOT EXISTS course_sessions (
   start_time TEXT,
   end_time TEXT,
   mode TEXT DEFAULT 'classroom',
+  session_status TEXT DEFAULT 'scheduled' CHECK (session_status IN ('scheduled','completed','cancelled','rescheduled')),
+  original_date DATE,
   created_by INTEGER REFERENCES users(id),
   created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS session_status TEXT DEFAULT 'scheduled' CHECK (session_status IN ('scheduled','completed','cancelled','rescheduled'));
+ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS original_date DATE;
+
+CREATE TABLE IF NOT EXISTS session_attendance (
+  id SERIAL PRIMARY KEY,
+  session_id INTEGER REFERENCES course_sessions(id) ON DELETE CASCADE,
+  student_id INTEGER REFERENCES users(id),
+  status TEXT NOT NULL CHECK (status IN ('present','absent','late','excused')),
+  note TEXT,
+  marked_by INTEGER REFERENCES users(id),
+  marked_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (session_id, student_id)
 );
 
 CREATE TABLE IF NOT EXISTS feedback_forms (

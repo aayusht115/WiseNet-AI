@@ -23,6 +23,7 @@ const App: React.FC = () => {
   const [activeSession, setActiveSession] = useState<PreReadSession | null>(null);
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
   const [highlightMaterialId, setHighlightMaterialId] = useState<number | undefined>(undefined);
+  const [courseInitialTab, setCourseInitialTab] = useState<'course' | 'feedback'>('course');
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -99,8 +100,9 @@ const App: React.FC = () => {
       case NavigationTab.DASHBOARD:
         return (
           <Dashboard
-            onOpenCourse={(id) => {
+            onOpenCourse={(id, initialTab) => {
               setSelectedCourseId(id);
+              setCourseInitialTab(initialTab === 'feedback' ? 'feedback' : 'course');
               setActiveTab(NavigationTab.COURSE_MANAGEMENT);
             }}
             onOpenPreRead={(materialId) => {
@@ -124,10 +126,12 @@ const App: React.FC = () => {
           <FacultySetup 
             onAddCourse={() => {
               setSelectedCourseId(null);
+              setCourseInitialTab('course');
               setActiveTab(NavigationTab.COURSE_EDITOR);
             }} 
             onSelectCourse={(id) => {
               setSelectedCourseId(id);
+              setCourseInitialTab('course');
               setActiveTab(NavigationTab.COURSE_MANAGEMENT);
             }}
           />
@@ -138,14 +142,17 @@ const App: React.FC = () => {
             courseId={selectedCourseId || undefined}
             onSave={() => {
               setSelectedCourseId(null);
+              setCourseInitialTab('course');
               setActiveTab(NavigationTab.FACULTY_SETUP);
             }}
             onSaveAndDisplay={(id) => {
               setSelectedCourseId(id);
+              setCourseInitialTab('course');
               setActiveTab(NavigationTab.COURSE_MANAGEMENT);
             }}
             onCancel={() => {
               setSelectedCourseId(null);
+              setCourseInitialTab('course');
               setActiveTab(NavigationTab.FACULTY_SETUP);
             }}
           />
@@ -155,8 +162,10 @@ const App: React.FC = () => {
           <CourseManagement 
             courseId={selectedCourseId}
             role={user.role}
+            initialTab={courseInitialTab}
             onBack={() => {
               setSelectedCourseId(null);
+              setCourseInitialTab('course');
               setActiveTab(user.role === 'faculty' ? NavigationTab.FACULTY_SETUP : NavigationTab.DASHBOARD);
             }}
           />
@@ -180,6 +189,7 @@ const App: React.FC = () => {
       noPadding={isFullPage}
       onSelectCourse={(id) => {
         setSelectedCourseId(id);
+        setCourseInitialTab('course');
         setActiveTab(NavigationTab.COURSE_MANAGEMENT);
       }}
     >

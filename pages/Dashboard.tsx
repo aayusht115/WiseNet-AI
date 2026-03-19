@@ -3,7 +3,7 @@ import { BookOpen, Loader2 } from "lucide-react";
 import { Course, CourseSession } from "../types";
 
 interface DashboardProps {
-  onOpenCourse?: (courseId: number) => void;
+  onOpenCourse?: (courseId: number, initialTab?: "course" | "feedback") => void;
   onOpenPreRead?: (materialId: number) => void;
 }
 
@@ -99,6 +99,14 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse, onOpenPreRead }) =>
     return () => window.removeEventListener("wisenet-time-override-updated", onTimeOverrideUpdated);
   }, []);
 
+  useEffect(() => {
+    const onFeedbackUpdated = () => {
+      fetchTodos();
+    };
+    window.addEventListener("wisenet-feedback-updated", onFeedbackUpdated);
+    return () => window.removeEventListener("wisenet-feedback-updated", onFeedbackUpdated);
+  }, []);
+
   const getSessionPreview = (course: Course): CourseSession[] => {
     const raw = (course as any).session_preview;
     if (!raw) return [];
@@ -135,7 +143,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse, onOpenPreRead }) =>
       return;
     }
     if (item.task_type === "feedback") {
-      onOpenCourse?.(item.course_id);
+      onOpenCourse?.(item.course_id, "feedback");
       return;
     }
   };

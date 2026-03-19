@@ -146,6 +146,25 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
   const currentItem = session.items[activeItemIndex];
   // Canonical numeric material ID — session.id is the definitive source
   const materialId = Number(session.id);
+  const missedQuestionDetails = quizAnswers
+    .map((answer, index) => {
+      const question = quizQuestions[index];
+      if (!question || answer === question.correctAnswer) return null;
+      return {
+        number: index + 1,
+        question: question.question,
+        selected: question.options[answer] ?? "No answer selected",
+        correct: question.options[question.correctAnswer] ?? "Unavailable",
+        explanation: question.explanation,
+      };
+    })
+    .filter(Boolean) as {
+      number: number;
+      question: string;
+      selected: string;
+      correct: string;
+      explanation: string;
+    }[];
 
   // Scroll chat to bottom on new message
   useEffect(() => {
@@ -333,6 +352,31 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
       chatInputRef.current?.focus();
     }
   }, [chatInput, chatLoading, materialId]);
+
+  const handleDiscussMissedQuestions = useCallback(() => {
+    if (missedQuestionDetails.length === 0 || chatLoading) return;
+
+    const prompt = [
+      "I got these quiz questions wrong. Please explain them using only this reading material.",
+      "",
+      "For each missed question:",
+      "1. explain why my selected answer is wrong",
+      "2. explain why the correct answer is right",
+      "3. tell me the key idea I should remember",
+      "",
+      ...missedQuestionDetails.map((item) =>
+        [
+          `Question ${item.number}: ${item.question}`,
+          `My answer: ${item.selected}`,
+          `Correct answer: ${item.correct}`,
+          `Explanation shown after the quiz: ${item.explanation}`,
+        ].join("\n")
+      ),
+    ].join("\n");
+
+    setRightView('chat');
+    void handleSendMessage(prompt);
+  }, [chatLoading, handleSendMessage, missedQuestionDetails]);
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
@@ -676,22 +720,6 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
                     </p>
                   </div>
 
-                  {/* Show wrong answers if we have the question data from this session */}
-                  {quizAnswers.length > 0 && quizScore < quizQuestions.length && (
-                    <div className="p-4 bg-slate-50 rounded-lg border border-slate-200 text-left space-y-2">
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Missed</p>
-                      <div className="flex flex-wrap gap-2">
-                        {quizAnswers.map((ans, i) =>
-                          ans !== quizQuestions[i]?.correctAnswer && quizQuestions[i] ? (
-                            <span key={i} className="px-2 py-1 bg-red-50 text-red-600 rounded text-[10px] font-bold border border-red-100">
-                              Q{i + 1}: {quizQuestions[i]?.question?.slice(0, 45)}…
-                            </span>
-                          ) : null
-                        )}
-                      </div>
-                    </div>
-                  )}
-
                   <button
                     onClick={() => setRightView('chat')}
                     className="moodle-btn-primary w-full py-2.5 text-xs font-bold"
@@ -699,9 +727,9 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
                     Back to Chat
                   </button>
 
-                  {quizScore < quizQuestions.length && (
+                  {missedQuestionDetails.length > 0 && (
                     <button
-                      onClick={() => setRightView('chat')}
+                      onClick={handleDiscussMissedQuestions}
                       className="w-full py-2.5 bg-blue-50 hover:bg-blue-100 text-moodle-blue rounded-lg text-xs font-bold flex items-center justify-center gap-2 border border-blue-200"
                     >
                       <MessageCircle size={13} />

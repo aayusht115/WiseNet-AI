@@ -17,8 +17,11 @@ import {
 interface CourseManagementProps {
   courseId: number;
   role: UserRole;
+  initialTab?: "course" | "feedback";
   onBack: () => void;
 }
+
+type CourseManagementTab = "course" | "materials" | "participants" | "analytics" | "attendance" | "feedback";
 
 type QuizQuestion = { id: number; order: number; question: string; options: string[] };
 
@@ -50,7 +53,7 @@ const formatDueDate = (value?: string) => {
   return date.toLocaleString();
 };
 
-const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onBack }) => {
+const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, initialTab = "course", onBack }) => {
   const [course, setCourse] = useState<Course | null>(null);
   const [details, setDetails] = useState<CourseDetail>({});
   const [sections, setSections] = useState<CourseSection[]>([]);
@@ -63,7 +66,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"course" | "materials" | "participants" | "reports" | "prereads" | "attendance">(
+  const [activeTab, setActiveTab] = useState<CourseManagementTab>(
     "course"
   );
 
@@ -154,6 +157,17 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     content: "",
     due_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
   });
+
+  const isLinkMaterial = materialForm.source_type === "link";
+  const canSubmitMaterial =
+    Boolean(materialForm.section_id) &&
+    Boolean(materialForm.title.trim()) &&
+    Boolean(materialForm.due_at) &&
+    (
+      isLinkMaterial
+        ? Boolean(materialForm.source_url.trim())
+        : Boolean(materialForm.source_file_base64.trim())
+    );
 
   const [quizModal, setQuizModal] = useState<{
     materialId: number;
@@ -295,6 +309,12 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
   }, [courseId, role]);
 
   useEffect(() => {
+    const nextTab: CourseManagementTab =
+      role === "student" && initialTab === "feedback" ? "feedback" : "course";
+    setActiveTab(nextTab);
+  }, [courseId, initialTab, role]);
+
+  useEffect(() => {
     if (role !== "student") return;
     const onTimeOverrideUpdated = () => {
       fetchActiveFeedback();
@@ -312,9 +332,9 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     return () => window.clearTimeout(timer);
   }, [feedbackSubmitAcknowledged]);
 
-  // Lazy-load pre-read analytics when faculty opens Pre-reads tab
+  // Lazy-load pre-read analytics when faculty opens Analytics tab
   useEffect(() => {
-    if (role !== "faculty" || activeTab !== "prereads" || preReadAnalytics || preReadAnalyticsLoading) return;
+    if (role !== "faculty" || activeTab !== "analytics" || preReadAnalytics || preReadAnalyticsLoading) return;
     setPreReadAnalyticsLoading(true);
     fetch(`/api/courses/${courseId}/pre-read-analytics`, { credentials: "include" })
       .then(r => r.ok ? r.json() : null)
@@ -384,9 +404,9 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     }
   };
 
-  // Lazy-load text feedback responses when faculty opens Reports tab
+  // Lazy-load text feedback responses when faculty opens Analytics tab
   useEffect(() => {
-    if (role !== "faculty" || activeTab !== "reports" || textFeedbackData.length > 0 || textFeedbackLoading) return;
+    if (role !== "faculty" || activeTab !== "analytics" || textFeedbackData.length > 0 || textFeedbackLoading) return;
     setTextFeedbackLoading(true);
     fetch(`/api/courses/${courseId}/feedback/text-responses`)
       .then(r => r.ok ? r.json() : [])
@@ -534,7 +554,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
   const handlePdfSelected = async (file: File | null) => {
     if (!file) return;
 
-    setPdfStatus("Preparing PDF for upload...");
+    setPdfStatus("");
     try {
       const buffer = await file.arrayBuffer();
       const sourceFileBase64 = arrayBufferToBase64(buffer);
@@ -544,9 +564,9 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         source_type: "pdf",
         source_file_name: file.name,
         source_file_base64: sourceFileBase64,
+        source_url: "",
         content: "",
       }));
-      setPdfStatus("PDF selected. Summary will be auto-generated after upload.");
     } finally {
       // no-op
     }
@@ -561,15 +581,12 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       return;
     }
 
-    if (
-      materialForm.source_type === "pdf" &&
-      !materialForm.source_file_base64.trim() &&
-      !materialForm.source_url.trim()
-    ) {
+    if (materialForm.source_type === "pdf" && !materialForm.source_file_base64.trim()) {
       return;
     }
 
     setUploadingMaterial(true);
+    setPdfStatus(materialForm.source_type === "pdf" ? "Uploading PDF..." : "Submitting web link...");
     try {
       const response = await fetch(`/api/courses/${courseId}/materials`, {
         method: "POST",
@@ -604,7 +621,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         content: "",
         due_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
       });
-      setPdfStatus("Reading material uploaded successfully!");
+      setPdfStatus(materialForm.source_type === "pdf" ? "PDF uploaded successfully!" : "Web link added successfully!");
       await fetchMaterialsOnly();
       setTimeout(() => setPdfStatus(""), 3000);
     } finally {
@@ -902,206 +919,266 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     items: materials.filter((m) => m.section_id === s.id),
   }));
 
+  const renderStudentMaterials = () => (
+    <div className="space-y-6">
+      {materialsBySection.map((section) => (
+        <div key={section.id} className="moodle-card p-6 space-y-4">
+          <h3 className="text-xl font-bold text-slate-800">{section.title}</h3>
+          {section.items.length === 0 ? (
+            <p className="text-sm text-slate-500 italic">No assigned reading materials in this section yet.</p>
+          ) : (
+            section.items.map((material) => (
+              <div key={material.id} className="border border-slate-200 rounded-lg p-4 space-y-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h4 className="font-bold text-slate-800">{material.title}</h4>
+                    <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mt-1">
+                      {material.source_type === "pdf" ? "PDF" : "Web Link"} resource
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">Due: {formatDueDate(material.due_at)}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
+                    {material.source_type === "link" && material.source_url ? (
+                      <a
+                        href={material.source_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3 py-1.5 border border-slate-300 rounded text-xs font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        Explore Source
+                      </a>
+                    ) : null}
+
+                    {material.source_type === "pdf" ? (
+                      <button
+                        onClick={() => openPdfMaterial(material.id)}
+                        className="px-3 py-1.5 border border-slate-300 rounded text-xs font-bold text-slate-700 hover:bg-slate-50"
+                      >
+                        Explore PDF
+                      </button>
+                    ) : null}
+
+                    <button
+                      onClick={() => startQuiz(material.id, material.title)}
+                      className="px-3 py-1.5 bg-moodle-blue text-white rounded text-xs font-bold hover:bg-blue-700"
+                    >
+                      Take 5Q Quiz
+                    </button>
+                  </div>
+                </div>
+
+                {material.latest_total ? (
+                  <p className="text-xs font-bold text-emerald-600">
+                    Last quiz score: {material.latest_score}/{material.latest_total}
+                  </p>
+                ) : null}
+              </div>
+            ))
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderStudentFeedback = () => {
+    const feedbackCompleted = Boolean(feedbackForm?.already_submitted || feedbackSubmitAcknowledged);
+
+    return (
+      <div className="space-y-6">
+        {loadingFeedback ? (
+          <div className="moodle-card p-4 border border-amber-200 bg-amber-50/50 flex items-center gap-2 text-sm text-amber-700">
+            <Loader2 size={16} className="animate-spin" />
+            Checking if feedback is active for this course...
+          </div>
+        ) : null}
+
+        {feedbackStatus ? (
+          <div
+            className={`rounded border px-3 py-2 text-sm ${
+              feedbackStatus.type === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                : "border-rose-200 bg-rose-50 text-rose-700"
+            }`}
+          >
+            {feedbackStatus.text}
+          </div>
+        ) : null}
+
+        {feedbackForm && !feedbackForm.already_submitted ? (
+          <div className="moodle-card p-6 border border-amber-200 bg-amber-50/40 space-y-4">
+            <div className="flex items-start gap-3">
+              <MessageSquareText size={20} className="text-amber-600 mt-0.5" />
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Course Feedback</h3>
+                <p className="text-sm text-slate-600">
+                  Please submit by {new Date(feedbackForm.due_at).toLocaleString()}.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {feedbackForm.questions.map((question) => (
+                <div key={question.id} className="rounded border border-slate-200 bg-white p-4">
+                  <p className="text-sm font-semibold text-slate-800 mb-2">
+                    {question.question_order}. {question.question_text}
+                  </p>
+                  {question.question_type === "mcq" ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {(question.options || []).map((option, optionIdx) => (
+                        <label key={optionIdx} className="text-sm text-slate-700 flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name={`feedback-${question.id}`}
+                            checked={feedbackAnswers[question.id] === String(optionIdx + 1)}
+                            onChange={() =>
+                              setFeedbackAnswers((prev) => ({
+                                ...prev,
+                                [question.id]: String(optionIdx + 1),
+                              }))
+                            }
+                          />
+                          {option}
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <textarea
+                      rows={3}
+                      className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
+                      placeholder="Type your response"
+                      value={feedbackAnswers[question.id] || ""}
+                      onChange={(e) =>
+                        setFeedbackAnswers((prev) => ({
+                          ...prev,
+                          [question.id]: e.target.value,
+                        }))
+                      }
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-slate-600">All questions are compulsory.</p>
+              <button
+                onClick={submitFeedback}
+                disabled={submittingFeedback}
+                className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black disabled:opacity-70"
+              >
+                {submittingFeedback ? "Submitting..." : "Submit Feedback"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {feedbackCompleted ? (
+          <div className="moodle-card p-6 border border-emerald-200 bg-emerald-50/70">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 size={20} className="text-emerald-600 mt-0.5" />
+              <div>
+                <h3 className="text-lg font-bold text-emerald-800">Feedback completed</h3>
+                <p className="text-sm text-emerald-700 mt-1">
+                  Your feedback for this course has been recorded successfully.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {!loadingFeedback && !feedbackForm && !feedbackCompleted ? (
+          <div className="moodle-card p-6 border border-slate-200 bg-slate-50/70">
+            <h3 className="text-lg font-bold text-slate-800">No active feedback right now</h3>
+            <p className="text-sm text-slate-600 mt-2">
+              When feedback opens for this course, you will be able to complete it from this tab.
+            </p>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderStudentCourse = () => (
     <div className="space-y-8">
-      {loadingFeedback ? (
-        <div className="moodle-card p-4 border border-amber-200 bg-amber-50/50 flex items-center gap-2 text-sm text-amber-700">
-          <Loader2 size={16} className="animate-spin" />
-          Checking if feedback is active for this course...
-        </div>
-      ) : null}
-
-      {feedbackForm && !feedbackForm.already_submitted ? (
-        <div className="moodle-card p-6 border border-amber-200 bg-amber-50/40 space-y-4">
-          <div className="flex items-start gap-3">
-            <MessageSquareText size={20} className="text-amber-600 mt-0.5" />
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">Course Feedback (Required)</h3>
-              <p className="text-sm text-slate-600">
-                Please submit by {new Date(feedbackForm.due_at).toLocaleString()}.
-              </p>
-            </div>
-          </div>
-
-          {feedbackStatus ? (
-            <div
-              className={`rounded border px-3 py-2 text-sm ${
-                feedbackStatus.type === "success"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-rose-200 bg-rose-50 text-rose-700"
-              }`}
-            >
-              {feedbackStatus.text}
-            </div>
-          ) : null}
-
-          <div className="space-y-3">
-            {feedbackForm.questions.map((question) => (
-              <div key={question.id} className="rounded border border-slate-200 bg-white p-4">
-                <p className="text-sm font-semibold text-slate-800 mb-2">
-                  {question.question_order}. {question.question_text}
-                </p>
-                {question.question_type === "mcq" ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {(question.options || []).map((option, optionIdx) => (
-                      <label key={optionIdx} className="text-sm text-slate-700 flex items-center gap-2">
-                        <input
-                          type="radio"
-                          name={`feedback-${question.id}`}
-                          checked={feedbackAnswers[question.id] === String(optionIdx + 1)}
-                          onChange={() =>
-                            setFeedbackAnswers((prev) => ({
-                              ...prev,
-                              [question.id]: String(optionIdx + 1),
-                            }))
-                          }
-                        />
-                        {option}
-                      </label>
-                    ))}
-                  </div>
-                ) : (
-                  <textarea
-                    rows={3}
-                    className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
-                    placeholder="Type your response"
-                    value={feedbackAnswers[question.id] || ""}
-                    onChange={(e) =>
-                      setFeedbackAnswers((prev) => ({
-                        ...prev,
-                        [question.id]: e.target.value,
-                      }))
-                    }
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs text-slate-600">All questions are compulsory.</p>
-            <button
-              onClick={submitFeedback}
-              disabled={submittingFeedback}
-              className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-bold hover:bg-black disabled:opacity-70"
-            >
-              {submittingFeedback ? "Submitting..." : "Submit Feedback"}
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {feedbackSubmitAcknowledged && feedbackStatus?.type === "success" ? (
-        <div className="moodle-card p-4 border border-emerald-200 bg-emerald-50 text-sm text-emerald-700">
-          {feedbackStatus.text}
-        </div>
-      ) : null}
-
-      <div className="moodle-card p-6">
-        <h3 className="text-xl font-bold text-slate-800 mb-4">Course Information</h3>
-        <p className="text-sm text-slate-700 mb-2">
-          <span className="font-bold">Faculty:</span> {details.faculty_info || course.instructor}
-          {details.teaching_assistant ? ` | Teaching Assistant: ${details.teaching_assistant}` : ""}
-          {details.credits ? ` | Cr: ${details.credits}` : ""}
-        </p>
-        <h4 className="font-bold text-slate-800 mt-5 mb-2">Course Learning Outcomes</h4>
-        <ol className="list-decimal pl-5 text-slate-700 text-sm space-y-1">
-          {(details.learning_outcomes || []).map((outcome, idx) => (
-            <li key={idx}>{outcome}</li>
-          ))}
-        </ol>
+      <div className="flex border-b border-slate-200 overflow-x-auto">
+        {[
+          { id: "course", label: "Course" },
+          { id: "materials", label: "Reading Materials" },
+          {
+            id: "feedback",
+            label:
+              feedbackForm && !feedbackForm.already_submitted
+                ? "Feedback (Required)"
+                : "Feedback",
+          },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id as CourseManagementTab)}
+            className={`px-5 py-3 text-sm font-bold whitespace-nowrap ${
+              activeTab === tab.id
+                ? "text-moodle-blue border-b-2 border-moodle-blue"
+                : "text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {(details.evaluation_components || []).length > 0 && (
-        <div className="moodle-card p-6 overflow-x-auto">
-          <h3 className="text-lg font-bold mb-4 text-slate-800">Evaluations and Submissions</h3>
-          <table className="min-w-full text-sm border border-slate-200">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="px-3 py-2 border">Sr. No.</th>
-                <th className="px-3 py-2 border">Component</th>
-                <th className="px-3 py-2 border">Code</th>
-                <th className="px-3 py-2 border">Weightage</th>
-                <th className="px-3 py-2 border">Timeline</th>
-                <th className="px-3 py-2 border">Scheduled</th>
-                <th className="px-3 py-2 border">CLOs</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(details.evaluation_components || []).map((row, idx) => (
-                <tr key={idx}>
-                  <td className="px-3 py-2 border">{row.sr_no}</td>
-                  <td className="px-3 py-2 border">{row.component}</td>
-                  <td className="px-3 py-2 border text-moodle-blue">{row.code}</td>
-                  <td className="px-3 py-2 border">{row.weightage_percent}%</td>
-                  <td className="px-3 py-2 border">{row.timeline}</td>
-                  <td className="px-3 py-2 border">{row.scheduled_date}</td>
-                  <td className="px-3 py-2 border">{row.clos_mapped}</td>
-                </tr>
+      {activeTab === "course" && (
+        <div className="space-y-8">
+          <div className="moodle-card p-6">
+            <h3 className="text-xl font-bold text-slate-800 mb-4">Course Information</h3>
+            <p className="text-sm text-slate-700 mb-2">
+              <span className="font-bold">Faculty:</span> {details.faculty_info || course.instructor}
+              {details.teaching_assistant ? ` | Teaching Assistant: ${details.teaching_assistant}` : ""}
+              {details.credits ? ` | Cr: ${details.credits}` : ""}
+            </p>
+            <h4 className="font-bold text-slate-800 mt-5 mb-2">Course Learning Outcomes</h4>
+            <ol className="list-decimal pl-5 text-slate-700 text-sm space-y-1">
+              {(details.learning_outcomes || []).map((outcome, idx) => (
+                <li key={idx}>{outcome}</li>
               ))}
-            </tbody>
-          </table>
+            </ol>
+          </div>
+
+          {(details.evaluation_components || []).length > 0 && (
+            <div className="moodle-card p-6 overflow-x-auto">
+              <h3 className="text-lg font-bold mb-4 text-slate-800">Evaluations and Submissions</h3>
+              <table className="min-w-full text-sm border border-slate-200">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 border">Sr. No.</th>
+                    <th className="px-3 py-2 border">Component</th>
+                    <th className="px-3 py-2 border">Code</th>
+                    <th className="px-3 py-2 border">Weightage</th>
+                    <th className="px-3 py-2 border">Timeline</th>
+                    <th className="px-3 py-2 border">Scheduled</th>
+                    <th className="px-3 py-2 border">CLOs</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(details.evaluation_components || []).map((row, idx) => (
+                    <tr key={idx}>
+                      <td className="px-3 py-2 border">{row.sr_no}</td>
+                      <td className="px-3 py-2 border">{row.component}</td>
+                      <td className="px-3 py-2 border text-moodle-blue">{row.code}</td>
+                      <td className="px-3 py-2 border">{row.weightage_percent}%</td>
+                      <td className="px-3 py-2 border">{row.timeline}</td>
+                      <td className="px-3 py-2 border">{row.scheduled_date}</td>
+                      <td className="px-3 py-2 border">{row.clos_mapped}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
-      <div className="space-y-6">
-        {materialsBySection.map((section) => (
-          <div key={section.id} className="moodle-card p-6 space-y-4">
-            <h3 className="text-xl font-bold text-slate-800">{section.title}</h3>
-            {section.items.length === 0 ? (
-              <p className="text-sm text-slate-500 italic">No assigned reading materials in this section yet.</p>
-            ) : (
-              section.items.map((material) => (
-                <div key={material.id} className="border border-slate-200 rounded-lg p-4 space-y-3">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <h4 className="font-bold text-slate-800">{material.title}</h4>
-                      <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mt-1">
-                        {material.source_type === "pdf" ? "PDF" : "Web Link"} resource
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">Due: {formatDueDate(material.due_at)}</p>
-                    </div>
-                    <div className="flex items-center gap-2 flex-wrap justify-end">
-                      {material.source_type === "link" && material.source_url ? (
-                        <a
-                          href={material.source_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="px-3 py-1.5 border border-slate-300 rounded text-xs font-bold text-slate-700 hover:bg-slate-50"
-                        >
-                          Explore Source
-                        </a>
-                      ) : null}
-
-                      {material.source_type === "pdf" ? (
-                        <button
-                          onClick={() => openPdfMaterial(material.id)}
-                          className="px-3 py-1.5 border border-slate-300 rounded text-xs font-bold text-slate-700 hover:bg-slate-50"
-                        >
-                          Explore PDF
-                        </button>
-                      ) : null}
-
-                      <button
-                        onClick={() => startQuiz(material.id, material.title)}
-                        className="px-3 py-1.5 bg-moodle-blue text-white rounded text-xs font-bold hover:bg-blue-700"
-                      >
-                        Take 5Q Quiz
-                      </button>
-                    </div>
-                  </div>
-
-                  {material.latest_total ? (
-                    <p className="text-xs font-bold text-emerald-600">
-                      Last quiz score: {material.latest_score}/{material.latest_total}
-                    </p>
-                  ) : null}
-                </div>
-              ))
-            )}
-          </div>
-        ))}
-      </div>
+      {activeTab === "materials" && renderStudentMaterials()}
+      {activeTab === "feedback" && renderStudentFeedback()}
     </div>
   );
 
@@ -1112,8 +1189,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
           { id: "course", label: "Course" },
           { id: "materials", label: "Reading Materials" },
           { id: "participants", label: "Participants" },
-          { id: "reports", label: "Quiz Reports" },
-          ...(role === "faculty" ? [{ id: "prereads", label: "Pre-read Analytics" }] : []),
+          ...(role === "faculty" ? [{ id: "analytics", label: "Analytics" }] : []),
           ...(role === "faculty" ? [{ id: "attendance", label: "Attendance" }] : []),
         ].map((tab) => (
           <button
@@ -1570,19 +1646,13 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
                     source_url: "",
                     source_file_name: "",
                     source_file_base64: "",
+                    content: "",
                   }))
                 }
               >
                 <option value="pdf">PDF Upload</option>
                 <option value="link">Web Link</option>
               </select>
-
-              <input
-                placeholder={materialForm.source_type === "pdf" ? "Optional PDF URL" : "Source URL"}
-                className="border border-slate-300 rounded px-3 py-2 text-sm"
-                value={materialForm.source_url}
-                onChange={(e) => setMaterialForm((prev) => ({ ...prev, source_url: e.target.value }))}
-              />
 
               <label className="text-xs font-semibold text-slate-600 flex flex-col gap-1">
                 Due date for students
@@ -1614,15 +1684,22 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
               </div>
             )}
 
-            {materialForm.source_type === "link" ? (
-              <textarea
-                rows={5}
-                placeholder="Paste link text/content (optional but recommended for accurate summary + quiz)."
-                className="w-full border border-slate-300 rounded px-3 py-2 text-sm"
-                value={materialForm.content}
-                onChange={(e) => setMaterialForm((prev) => ({ ...prev, content: e.target.value }))}
-              />
-            ) : null}
+            {materialForm.source_type === "link" && (
+              <label className="text-sm font-medium text-slate-700 flex flex-col gap-2">
+                Web link
+                <input
+                  type="url"
+                  required
+                  placeholder="Paste the article or web page URL"
+                  className="border border-slate-300 rounded px-3 py-2 text-sm"
+                  value={materialForm.source_url}
+                  onChange={(e) => setMaterialForm((prev) => ({ ...prev, source_url: e.target.value }))}
+                />
+                <span className="text-xs text-slate-500">
+                  This field is required when Web Link is selected.
+                </span>
+              </label>
+            )}
 
             {pdfStatus && (
               <div className={`flex items-start gap-2 px-3 py-2 rounded text-sm ${
@@ -1630,13 +1707,13 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
                 pdfStatus.toLowerCase().includes("could not") ||
                 pdfStatus.toLowerCase().includes("failed")
                   ? "bg-red-50 text-red-700 border border-red-200"
-                  : pdfStatus.toLowerCase().includes("submitted") || pdfStatus.toLowerCase().includes("selected")
+                  : pdfStatus.toLowerCase().includes("uploaded successfully") || pdfStatus.toLowerCase().includes("added successfully")
                   ? "bg-green-50 text-green-700 border border-green-200"
                   : "bg-blue-50 text-blue-700 border border-blue-200"
               }`}>
                 {pdfStatus.toLowerCase().includes("error") || pdfStatus.toLowerCase().includes("could not") || pdfStatus.toLowerCase().includes("failed")
                   ? <AlertCircle size={15} className="shrink-0 mt-0.5" />
-                  : pdfStatus.toLowerCase().includes("submitted") || pdfStatus.toLowerCase().includes("selected")
+                  : pdfStatus.toLowerCase().includes("uploaded successfully") || pdfStatus.toLowerCase().includes("added successfully")
                   ? <CheckCircle2 size={15} className="shrink-0 mt-0.5" />
                   : <Loader2 size={15} className="shrink-0 mt-0.5 animate-spin" />}
                 {pdfStatus}
@@ -1645,15 +1722,15 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
 
             <div className="mt-2 p-3 border border-slate-200 rounded bg-slate-50 flex items-center justify-between gap-3">
               <p className="text-xs text-slate-600">
-                Click submit to save the PDF in DB, assign it to students, and refresh the reading list.
+                Submit saves the material, assigns it to students, and refreshes the reading list.
               </p>
               <button
                 onClick={handleUploadMaterial}
-                disabled={uploadingMaterial}
+                disabled={uploadingMaterial || !canSubmitMaterial}
                 className="px-4 py-2 bg-slate-900 border border-slate-900 text-white rounded font-bold text-sm hover:bg-black disabled:opacity-70 flex items-center gap-2 shrink-0"
               >
                 {uploadingMaterial ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
-                Submit PDF & Assign Now
+                {materialForm.source_type === "link" ? "Submit Web Link & Assign" : "Submit PDF & Assign"}
               </button>
             </div>
           </div>
@@ -1774,66 +1851,192 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         </div>
       )}
 
-      {activeTab === "reports" && (
+      {activeTab === "analytics" && (
         <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            <div className="moodle-card p-4">
-              <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Attempts</p>
-              <p className="text-2xl font-black text-slate-800 mt-1">{quizAnalytics?.attempts || 0}</p>
+          <div className="moodle-card p-6 space-y-6">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">Quiz Analytics</h3>
+              <p className="text-sm text-slate-500 mt-1">Performance and attempt-level reporting for assigned quizzes.</p>
             </div>
-            <div className="moodle-card p-4">
-              <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Average %</p>
-              <p className="text-2xl font-black text-moodle-blue mt-1">{quizAnalytics?.average_percentage || 0}%</p>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div className="moodle-card p-4">
+                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Attempts</p>
+                <p className="text-2xl font-black text-slate-800 mt-1">{quizAnalytics?.attempts || 0}</p>
+              </div>
+              <div className="moodle-card p-4">
+                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Average %</p>
+                <p className="text-2xl font-black text-moodle-blue mt-1">{quizAnalytics?.average_percentage || 0}%</p>
+              </div>
+              <div className="moodle-card p-4">
+                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Highest %</p>
+                <p className="text-2xl font-black text-emerald-600 mt-1">{quizAnalytics?.highest_percentage || 0}%</p>
+              </div>
+              <div className="moodle-card p-4">
+                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Top Performer</p>
+                <p className="text-sm font-bold text-slate-800 mt-2">{quizAnalytics?.top_performer?.name || "--"}</p>
+                <p className="text-xs text-slate-500">{quizAnalytics?.top_performer?.average_percentage || 0}% avg</p>
+              </div>
             </div>
-            <div className="moodle-card p-4">
-              <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Highest %</p>
-              <p className="text-2xl font-black text-emerald-600 mt-1">{quizAnalytics?.highest_percentage || 0}%</p>
-            </div>
-            <div className="moodle-card p-4">
-              <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Top Performer</p>
-              <p className="text-sm font-bold text-slate-800 mt-2">{quizAnalytics?.top_performer?.name || "--"}</p>
-              <p className="text-xs text-slate-500">{quizAnalytics?.top_performer?.average_percentage || 0}% avg</p>
+
+            <div className="overflow-x-auto">
+              <h4 className="text-sm font-bold text-slate-800 mb-3">Quiz Attempt Reports</h4>
+              {reports.length === 0 ? (
+                <p className="text-sm text-slate-500 italic">No quiz submissions yet.</p>
+              ) : (
+                <table className="min-w-full text-sm border border-slate-200">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="px-3 py-2 border">Student</th>
+                      <th className="px-3 py-2 border">Material</th>
+                      <th className="px-3 py-2 border">Section</th>
+                      <th className="px-3 py-2 border">Score</th>
+                      <th className="px-3 py-2 border">Submitted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reports.map((r) => (
+                      <tr key={r.id}>
+                        <td className="px-3 py-2 border">
+                          {r.student_name}
+                          <div className="text-xs text-slate-500">{r.student_email}</div>
+                        </td>
+                        <td className="px-3 py-2 border">{r.material_title}</td>
+                        <td className="px-3 py-2 border">{r.section_title}</td>
+                        <td className="px-3 py-2 border font-bold text-moodle-blue">
+                          {r.score}/{r.total_questions}
+                        </td>
+                        <td className="px-3 py-2 border">
+                          {new Date(r.submitted_at).toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
           </div>
 
-          <div className="moodle-card p-6 overflow-x-auto">
-            <h3 className="text-lg font-bold mb-4">Quiz Attempt Reports</h3>
-          {reports.length === 0 ? (
-            <p className="text-sm text-slate-500 italic">No quiz submissions yet.</p>
-          ) : (
-            <table className="min-w-full text-sm border border-slate-200">
-              <thead className="bg-slate-50">
-                <tr>
-                  <th className="px-3 py-2 border">Student</th>
-                  <th className="px-3 py-2 border">Material</th>
-                  <th className="px-3 py-2 border">Section</th>
-                  <th className="px-3 py-2 border">Score</th>
-                  <th className="px-3 py-2 border">Submitted</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reports.map((r) => (
-                  <tr key={r.id}>
-                    <td className="px-3 py-2 border">
-                      {r.student_name}
-                      <div className="text-xs text-slate-500">{r.student_email}</div>
-                    </td>
-                    <td className="px-3 py-2 border">{r.material_title}</td>
-                    <td className="px-3 py-2 border">{r.section_title}</td>
-                    <td className="px-3 py-2 border font-bold text-moodle-blue">
-                      {r.score}/{r.total_questions}
-                    </td>
-                    <td className="px-3 py-2 border">
-                      {new Date(r.submitted_at).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+          <div className="moodle-card p-6 space-y-6">
+            <div>
+              <h3 className="text-lg font-bold text-slate-800">Pre-read Analytics</h3>
+              <p className="text-sm text-slate-500 mt-1">Reading completion and quiz follow-through for assigned pre-reads.</p>
+            </div>
+
+            {preReadAnalyticsLoading ? (
+              <div className="flex justify-center py-10">
+                <Loader2 size={28} className="animate-spin text-moodle-blue" />
+              </div>
+            ) : !preReadAnalytics ? (
+              <p className="text-sm text-slate-500 italic">No pre-read analytics available yet.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="moodle-card p-4">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Total Enrolled</p>
+                    <p className="text-3xl font-black text-slate-800 mt-1">{preReadAnalytics.summary.total_students}</p>
+                  </div>
+                  <div className="moodle-card p-4">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Opened ≥ 1 Reading</p>
+                    <p className="text-3xl font-black text-moodle-blue mt-1">{preReadAnalytics.summary.opened_any}</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      {preReadAnalytics.summary.total_students > 0
+                        ? Math.round((preReadAnalytics.summary.opened_any / preReadAnalytics.summary.total_students) * 100)
+                        : 0}% of class
+                    </p>
+                  </div>
+                  <div className="moodle-card p-4">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Completed ≥ 1 Quiz</p>
+                    <p className="text-3xl font-black text-emerald-600 mt-1">{preReadAnalytics.summary.completed_any_quiz}</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      {preReadAnalytics.summary.total_students > 0
+                        ? Math.round((preReadAnalytics.summary.completed_any_quiz / preReadAnalytics.summary.total_students) * 100)
+                        : 0}% of class
+                    </p>
+                  </div>
+                </div>
+
+                {(() => {
+                  const notStarted = preReadAnalytics.students.filter((s) => Number(s.opened_readings) === 0);
+                  if (notStarted.length === 0) return null;
+                  return (
+                    <div className="p-5 border border-amber-200 bg-amber-50/70 rounded-xl">
+                      <p className="text-sm font-bold text-amber-700 mb-3">
+                        {notStarted.length} student{notStarted.length > 1 ? "s" : ""} have not opened any assigned reading yet.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {notStarted.map((s) => (
+                          <span key={s.student_id} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold px-2.5 py-1 rounded-full">
+                            {s.student_name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <div className="overflow-x-auto">
+                  <h4 className="text-sm font-bold text-slate-800 mb-3">Student Completion Breakdown</h4>
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      <tr>
+                        <th className="px-4 py-3 text-left">Student</th>
+                        <th className="px-4 py-3 text-center">Assigned</th>
+                        <th className="px-4 py-3 text-center">Opened</th>
+                        <th className="px-4 py-3 text-center">Read</th>
+                        <th className="px-4 py-3 text-center">Quiz Done</th>
+                        <th className="px-4 py-3 text-center">Avg Quiz %</th>
+                        <th className="px-4 py-3 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {preReadAnalytics.students.map((s) => {
+                        const assigned = Number(s.assigned_readings);
+                        const quizDone = Number(s.quiz_completed_readings);
+                        const pct = assigned > 0 ? Math.round((quizDone / assigned) * 100) : 0;
+                        const statusColor =
+                          pct === 100 ? "text-emerald-600 bg-emerald-50" :
+                          pct >= 50 ? "text-amber-600 bg-amber-50" :
+                          "text-red-600 bg-red-50";
+                        const statusLabel = pct === 100 ? "Complete" : pct >= 50 ? "In Progress" : "Not Started";
+                        return (
+                          <tr key={s.student_id} className="hover:bg-slate-50 transition-colors">
+                            <td className="px-4 py-3">
+                              <p className="font-semibold text-slate-800">{s.student_name}</p>
+                              <p className="text-xs text-slate-400">{s.student_email}</p>
+                            </td>
+                            <td className="px-4 py-3 text-center font-bold text-slate-700">{s.assigned_readings}</td>
+                            <td className="px-4 py-3 text-center text-slate-600">{s.opened_readings}</td>
+                            <td className="px-4 py-3 text-center text-slate-600">{s.read_readings}</td>
+                            <td className="px-4 py-3 text-center font-bold text-moodle-blue">{s.quiz_completed_readings}</td>
+                            <td className="px-4 py-3 text-center">
+                              {s.avg_quiz_percent != null ? (
+                                <span className={`font-bold ${
+                                  Number(s.avg_quiz_percent) >= 70
+                                    ? "text-emerald-600"
+                                    : Number(s.avg_quiz_percent) >= 50
+                                      ? "text-amber-600"
+                                      : "text-red-500"
+                                }`}>
+                                  {Number(s.avg_quiz_percent).toFixed(0)}%
+                                </span>
+                              ) : <span className="text-slate-400">—</span>}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${statusColor}`}>
+                                {statusLabel}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
 
-          {/* ── Feedback Text Response Summariser ── */}
           {role === "faculty" && (
             <div className="moodle-card p-6 space-y-5">
               <div className="flex items-center justify-between">
@@ -1938,119 +2141,6 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
                 );
               })}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Pre-read Analytics Tab (faculty only) ──────────────────────────── */}
-      {activeTab === "prereads" && (
-        <div className="space-y-6">
-          {preReadAnalyticsLoading ? (
-            <div className="flex justify-center py-10"><Loader2 size={28} className="animate-spin text-moodle-blue" /></div>
-          ) : !preReadAnalytics ? (
-            <p className="text-sm text-slate-500 italic">No data available yet.</p>
-          ) : (
-            <>
-              {/* Summary cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="moodle-card p-4">
-                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Total Enrolled</p>
-                  <p className="text-3xl font-black text-slate-800 mt-1">{preReadAnalytics.summary.total_students}</p>
-                </div>
-                <div className="moodle-card p-4">
-                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Opened ≥ 1 Reading</p>
-                  <p className="text-3xl font-black text-moodle-blue mt-1">{preReadAnalytics.summary.opened_any}</p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {preReadAnalytics.summary.total_students > 0
-                      ? Math.round((preReadAnalytics.summary.opened_any / preReadAnalytics.summary.total_students) * 100)
-                      : 0}% of class
-                  </p>
-                </div>
-                <div className="moodle-card p-4">
-                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Completed ≥ 1 Quiz</p>
-                  <p className="text-3xl font-black text-emerald-600 mt-1">{preReadAnalytics.summary.completed_any_quiz}</p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    {preReadAnalytics.summary.total_students > 0
-                      ? Math.round((preReadAnalytics.summary.completed_any_quiz / preReadAnalytics.summary.total_students) * 100)
-                      : 0}% of class
-                  </p>
-                </div>
-              </div>
-
-              {/* Not-started list */}
-              {(() => {
-                const notStarted = preReadAnalytics.students.filter(s => Number(s.opened_readings) === 0);
-                if (notStarted.length === 0) return null;
-                return (
-                  <div className="moodle-card p-5 border-l-4 border-amber-400">
-                    <p className="text-sm font-bold text-amber-700 mb-3">
-                      ⚠ {notStarted.length} student{notStarted.length > 1 ? "s" : ""} haven't opened any reading yet
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {notStarted.map(s => (
-                        <span key={s.student_id} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold px-2.5 py-1 rounded-full">
-                          {s.student_name}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Per-student table */}
-              <div className="moodle-card overflow-x-auto">
-                <div className="px-5 py-4 border-b border-slate-100">
-                  <h3 className="text-sm font-bold text-slate-800">Student Completion Breakdown</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Shows opened / read / quiz done out of assigned readings</p>
-                </div>
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    <tr>
-                      <th className="px-4 py-3 text-left">Student</th>
-                      <th className="px-4 py-3 text-center">Assigned</th>
-                      <th className="px-4 py-3 text-center">Opened</th>
-                      <th className="px-4 py-3 text-center">Read</th>
-                      <th className="px-4 py-3 text-center">Quiz Done</th>
-                      <th className="px-4 py-3 text-center">Avg Quiz %</th>
-                      <th className="px-4 py-3 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {preReadAnalytics.students.map((s) => {
-                      const assigned = Number(s.assigned_readings);
-                      const quizDone = Number(s.quiz_completed_readings);
-                      const pct = assigned > 0 ? Math.round((quizDone / assigned) * 100) : 0;
-                      const statusColor = pct === 100 ? "text-emerald-600 bg-emerald-50" : pct >= 50 ? "text-amber-600 bg-amber-50" : "text-red-600 bg-red-50";
-                      const statusLabel = pct === 100 ? "✓ Complete" : pct >= 50 ? "In Progress" : "Not Started";
-                      return (
-                        <tr key={s.student_id} className="hover:bg-slate-50 transition-colors">
-                          <td className="px-4 py-3">
-                            <p className="font-semibold text-slate-800">{s.student_name}</p>
-                            <p className="text-xs text-slate-400">{s.student_email}</p>
-                          </td>
-                          <td className="px-4 py-3 text-center font-bold text-slate-700">{s.assigned_readings}</td>
-                          <td className="px-4 py-3 text-center text-slate-600">{s.opened_readings}</td>
-                          <td className="px-4 py-3 text-center text-slate-600">{s.read_readings}</td>
-                          <td className="px-4 py-3 text-center font-bold text-moodle-blue">{s.quiz_completed_readings}</td>
-                          <td className="px-4 py-3 text-center">
-                            {s.avg_quiz_percent != null ? (
-                              <span className={`font-bold ${Number(s.avg_quiz_percent) >= 70 ? "text-emerald-600" : Number(s.avg_quiz_percent) >= 50 ? "text-amber-600" : "text-red-500"}`}>
-                                {Number(s.avg_quiz_percent).toFixed(0)}%
-                              </span>
-                            ) : <span className="text-slate-400">—</span>}
-                          </td>
-                          <td className="px-4 py-3 text-center">
-                            <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${statusColor}`}>
-                              {statusLabel}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </>
           )}
         </div>
       )}
