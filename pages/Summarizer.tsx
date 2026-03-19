@@ -2,6 +2,9 @@
 import React, { useState, useRef } from 'react';
 import { FileText, Loader2, Sparkles, Copy, Check, ExternalLink, AlertCircle, Upload, X } from 'lucide-react';
 import { SummaryResult } from '../types';
+import { geminiService } from '../services/geminiService';
+
+type DetailLevel = 'Brief' | 'Standard' | 'Detailed';
 
 const Summarizer: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -12,6 +15,7 @@ const Summarizer: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
+  const [detailLevel, setDetailLevel] = useState<DetailLevel>('Standard');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleSummarize = async () => {
@@ -20,16 +24,7 @@ const Summarizer: React.FC = () => {
     setError(null);
     setSummary(null);
     try {
-      const res = await fetch('/api/ai/summarize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: title || 'Untitled Reading', content }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to summarize. Please try again.');
-      }
-      const result: SummaryResult = await res.json();
+      const result = await geminiService.summarizeContent(title || 'Untitled Reading', content, detailLevel);
       if (!result.summary) throw new Error('No summary returned. Try pasting more content (at least a few paragraphs).');
       setSummary(result);
     } catch (err: any) {
@@ -125,6 +120,25 @@ const Summarizer: React.FC = () => {
           </div>
 
           <div className="space-y-2">
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Summary Depth</label>
+            <div className="flex items-center bg-slate-100 rounded p-1 w-fit gap-1">
+              {(['Brief', 'Standard', 'Detailed'] as DetailLevel[]).map((level) => (
+                <button
+                  key={level}
+                  onClick={() => setDetailLevel(level)}
+                  className={`px-4 py-1.5 text-xs font-bold rounded transition-all ${
+                    detailLevel === level
+                      ? 'bg-white text-moodle-blue shadow-sm'
+                      : 'text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {level}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Content</label>
               <div className="flex items-center space-x-2">
@@ -201,33 +215,44 @@ const Summarizer: React.FC = () => {
             </div>
 
             <div className="p-8 space-y-8">
+              {/* ── Overview / Abstract ── */}
               <section className="space-y-3">
                 <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center space-x-2">
                   <div className="w-1 h-4 bg-moodle-blue rounded-full"></div>
-                  <span>The Abstract</span>
+                  <span>Overview</span>
                 </h3>
-                <p className="text-slate-600 leading-relaxed italic border-l-4 border-slate-100 pl-4 text-sm">
-                  {summary.summary}
-                </p>
+                <div className="border-l-4 border-moodle-blue pl-5 py-1">
+                  <p className="text-slate-700 leading-relaxed text-sm whitespace-pre-line">
+                    {summary.summary}
+                  </p>
+                </div>
               </section>
 
+              {/* ── Key Takeaways (labeled per chunk) ── */}
               <section className="space-y-4">
                 <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center space-x-2">
                   <div className="w-1 h-4 bg-emerald-500 rounded-full"></div>
                   <span>Key Takeaways</span>
                 </h3>
-                <div className="grid grid-cols-1 gap-3">
-                  {summary.keyTakeaways.map((point, i) => (
-                    <div key={i} className="bg-slate-50 p-4 rounded flex items-start space-x-3 border border-slate-100">
-                      <div className="w-6 h-6 rounded bg-blue-50 text-moodle-blue flex items-center justify-center flex-shrink-0 text-[10px] font-bold border border-blue-100">
-                        {i + 1}
+                <div className="grid grid-cols-1 gap-4">
+                  {summary.keyTakeaways.map((point, i) => {
+                    const label = summary.keyTakeawayLabels?.[i] ?? `Insight ${i + 1}`;
+                    return (
+                      <div key={i} className="bg-slate-50 rounded-lg border border-slate-100 overflow-hidden">
+                        <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-100 flex items-center space-x-2">
+                          <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[9px] font-bold flex-shrink-0">
+                            {i + 1}
+                          </div>
+                          <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider">{label}</span>
+                        </div>
+                        <p className="px-4 py-3 text-sm text-slate-700 leading-relaxed">{point}</p>
                       </div>
-                      <p className="text-sm text-slate-700">{point}</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
 
+              {/* ── Further Learning ── */}
               <section className="space-y-3">
                 <h3 className="text-sm font-bold text-slate-800 uppercase tracking-widest flex items-center space-x-2">
                   <div className="w-1 h-4 bg-moodle-orange rounded-full"></div>

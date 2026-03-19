@@ -5,9 +5,10 @@ import { PreReadSession } from '../types';
 
 interface PreReadBoosterProps {
   onStart: (session: PreReadSession) => void;
+  highlightMaterialId?: number;
 }
 
-const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart }) => {
+const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart, highlightMaterialId }) => {
   const [sessions, setSessions] = useState<PreReadSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -20,12 +21,12 @@ const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart }) => {
       if (response.ok) {
         setSessions(await response.json());
       } else {
-        const payload = await response.json().catch(() => ({ error: 'Failed to fetch sessions' }));
-        setError(payload.error || 'Failed to fetch sessions');
+        const payload = await response.json().catch(() => ({ error: "Couldn't load your sessions. Please try again." }));
+        setError(payload.error || "Couldn't load your sessions. Please try again.");
       }
     } catch (err) {
       console.error("Failed to fetch sessions", err);
-      setError('Failed to fetch sessions');
+      setError("Couldn't load your sessions. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -81,7 +82,11 @@ const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart }) => {
                 </button>
               </div>
             ) : sessions.length > 0 ? sessions.map((session) => (
-              <div key={session.id} className="moodle-card p-6 hover:border-moodle-blue transition-all group">
+              <div
+                key={session.id}
+                id={`session-${session.id}`}
+                className={`moodle-card p-6 hover:border-moodle-blue transition-all group ${String(session.id) === String(highlightMaterialId) ? 'ring-2 ring-moodle-blue' : ''}`}
+              >
                 <div className="flex justify-between items-start mb-6">
                   <div className="flex items-center space-x-4">
                     <div className={`w-12 h-12 rounded flex items-center justify-center ${session.status === 'completed' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-moodle-blue'}`}>

@@ -4,6 +4,7 @@ import { Course, CourseSession } from "../types";
 
 interface DashboardProps {
   onOpenCourse?: (courseId: number) => void;
+  onOpenPreRead?: (materialId: number) => void;
 }
 
 type TodoItem = {
@@ -24,7 +25,7 @@ function formatSessionDate(value: string) {
   return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])).toLocaleDateString();
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
+const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse, onOpenPreRead }) => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [availableCourses, setAvailableCourses] = useState<Course[]>([]);
   const [todos, setTodos] = useState<TodoItem[]>([]);
@@ -80,7 +81,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
       await fetchTodos();
     } catch (fetchError) {
       console.error("Failed to fetch courses", fetchError);
-      setError("Could not load dashboard data.");
+      setError("Something went wrong loading your dashboard. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -129,7 +130,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onOpenCourse }) => {
   };
 
   const openTodoItem = async (item: TodoItem) => {
-    if (item.task_type === "pre_read" || item.task_type === "feedback") {
+    if (item.task_type === "pre_read") {
+      onOpenPreRead?.(item.item_id);
+      return;
+    }
+    if (item.task_type === "feedback") {
       onOpenCourse?.(item.course_id);
       return;
     }

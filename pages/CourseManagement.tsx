@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Loader2, MessageSquareText, Plus, Trash2, UploadCloud } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, MessageSquareText, Plus, Sparkles, Trash2, UploadCloud } from "lucide-react";
 import ParticipantEnrollmentPanel, {
   ParticipantUser,
 } from "../components/ParticipantEnrollmentPanel";
@@ -97,6 +97,19 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
   const [loadingFeedback, setLoadingFeedback] = useState(false);
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
 
+  // Feedback text-response summarizer (faculty, Reports tab)
+  type TextResponseQuestion = {
+    question_id: number;
+    question_order: number;
+    question_text: string;
+    responses: { student_name: string; answer_text: string }[];
+  };
+  type QuestionSummary = { loading: boolean; summary: string | null; keyTakeaways: string[] };
+  const [textFeedbackData, setTextFeedbackData] = useState<TextResponseQuestion[]>([]);
+  const [textFeedbackLoading, setTextFeedbackLoading] = useState(false);
+  const [feedbackSummaries, setFeedbackSummaries] = useState<Record<number, QuestionSummary>>({});
+  const [expandedResponses, setExpandedResponses] = useState<Record<number, boolean>>({});
+
   const [materialForm, setMaterialForm] = useState({
     section_id: "",
     title: "",
@@ -163,7 +176,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       });
       if (!response.ok) {
         setFeedbackForm(null);
-        setFeedbackStatus({ type: "error", text: "Could not load active feedback form." });
+        setFeedbackStatus({ type: "error", text: "Couldn't load the feedback form. Please try again." });
         return;
       }
       const payload = await response.json();
@@ -172,7 +185,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       setFeedbackAnswers({});
     } catch {
       setFeedbackForm(null);
-      setFeedbackStatus({ type: "error", text: "Could not load active feedback form." });
+      setFeedbackStatus({ type: "error", text: "Couldn't load the feedback form. Please try again." });
     } finally {
       setLoadingFeedback(false);
     }
@@ -184,8 +197,8 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     try {
       const detailsRes = await fetch(`/api/course-details/${courseId}`);
       if (!detailsRes.ok) {
-        const payload = await detailsRes.json().catch(() => ({ error: "Could not load course data." }));
-        setError(payload.error || "Could not load course data.");
+        const payload = await detailsRes.json().catch(() => ({ error: "Something went wrong loading this course. Please try again." }));
+        setError(payload.error || "Something went wrong loading this course. Please try again.");
         return;
       }
       const data = await detailsRes.json();
@@ -225,7 +238,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       }
     } catch (error) {
       console.error("Failed to fetch course data", error);
-      setError("Could not load course data.");
+      setError("Something went wrong loading this course. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -264,6 +277,38 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     }, 5000);
     return () => window.clearTimeout(timer);
   }, [feedbackSubmitAcknowledged]);
+
+  // Lazy-load text feedback responses when faculty opens Reports tab
+  useEffect(() => {
+    if (role !== "faculty" || activeTab !== "reports" || textFeedbackData.length > 0 || textFeedbackLoading) return;
+    setTextFeedbackLoading(true);
+    fetch(`/api/courses/${courseId}/feedback/text-responses`)
+      .then(r => r.ok ? r.json() : [])
+      .then((data: TextResponseQuestion[]) => setTextFeedbackData(data))
+      .catch(() => {})
+      .finally(() => setTextFeedbackLoading(false));
+  }, [activeTab, role, courseId, textFeedbackData.length, textFeedbackLoading]);
+
+  const generateFeedbackSummary = async (q: TextResponseQuestion) => {
+    setFeedbackSummaries(prev => ({ ...prev, [q.question_id]: { loading: true, summary: null, keyTakeaways: [] } }));
+    try {
+      const r = await fetch("/api/ai/feedback-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionText: q.question_text, answers: q.responses.map(r => r.answer_text) }),
+      });
+      const data = await r.json();
+      setFeedbackSummaries(prev => ({
+        ...prev,
+        [q.question_id]: { loading: false, summary: data.summary || null, keyTakeaways: data.keyTakeaways || [] },
+      }));
+    } catch {
+      setFeedbackSummaries(prev => ({
+        ...prev,
+        [q.question_id]: { loading: false, summary: "Failed to generate summary. Please try again.", keyTakeaways: [] },
+      }));
+    }
+  };
 
   const updateEvaluationRow = (index: number, key: keyof EvaluationComponent, value: string | number) => {
     setDetails((prev) => {
@@ -314,14 +359,14 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         }),
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "Failed to save session" }));
-        setSessionNotice({ type: "error", text: payload.error || "Failed to save session" });
+        const payload = await response.json().catch(() => ({ error: "Couldn't save the session. Please try again." }));
+        setSessionNotice({ type: "error", text: payload.error || "Couldn't save the session. Please try again." });
         return;
       }
       setSessionNotice({ type: "success", text: `Session S${row.session_number} updated.` });
       await fetchAll();
     } catch {
-      setSessionNotice({ type: "error", text: "Failed to save session" });
+      setSessionNotice({ type: "error", text: "Couldn't save the session. Please try again." });
     } finally {
       setSavingSessionId(null);
     }
@@ -437,11 +482,12 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       });
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: "Upload failed" }));
-        setPdfStatus(error.error || "Upload failed");
+        const error = await response.json().catch(() => ({ error: "Upload failed. Please try again." }));
+        setPdfStatus(error.error || "Upload failed. Please try again.");
         return;
       }
 
+      setUploadingMaterial(false);
       setMaterialForm({
         section_id: "",
         title: "",
@@ -452,8 +498,9 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         content: "",
         due_at: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
       });
-      setPdfStatus("Submitted. Reading assigned and synced from DB.");
+      setPdfStatus("Reading material uploaded successfully!");
       await fetchMaterialsOnly();
+      setTimeout(() => setPdfStatus(""), 3000);
     } finally {
       setUploadingMaterial(false);
     }
@@ -524,8 +571,8 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         body: JSON.stringify({ user_id: userId }),
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "Failed to enroll student." }));
-        setEnrolNotice({ type: "error", text: payload.error || "Failed to enroll student." });
+        const payload = await response.json().catch(() => ({ error: "Couldn't enroll this student. Please try again." }));
+        setEnrolNotice({ type: "error", text: payload.error || "Couldn't enroll this student. Please try again." });
         return;
       }
       setEnrolNotice({ type: "success", text: "Student enrolled successfully." });
@@ -564,8 +611,8 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         body: JSON.stringify({ user_ids: selectedCandidateIds }),
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "Failed to enroll selected students." }));
-        setEnrolNotice({ type: "error", text: payload.error || "Failed to enroll selected students." });
+        const payload = await response.json().catch(() => ({ error: "Couldn't enroll the selected students. Please try again." }));
+        setEnrolNotice({ type: "error", text: payload.error || "Couldn't enroll the selected students. Please try again." });
         return;
       }
       const payload = await response.json().catch(() => ({}));
@@ -627,14 +674,14 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         }),
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "Failed to save course settings." }));
-        setCourseActionNotice({ type: "error", text: payload.error || "Failed to save course settings." });
+        const payload = await response.json().catch(() => ({ error: "Couldn't save course settings. Please try again." }));
+        setCourseActionNotice({ type: "error", text: payload.error || "Couldn't save course settings. Please try again." });
         return;
       }
       setCourseActionNotice({ type: "success", text: "Course settings updated successfully." });
       await fetchAll();
     } catch {
-      setCourseActionNotice({ type: "error", text: "Failed to save course settings." });
+      setCourseActionNotice({ type: "error", text: "Couldn't save course settings. Please try again." });
     } finally {
       setSavingCourseMeta(false);
     }
@@ -653,13 +700,13 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         method: "DELETE",
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "Failed to delete course." }));
-        setCourseActionNotice({ type: "error", text: payload.error || "Failed to delete course." });
+        const payload = await response.json().catch(() => ({ error: "Couldn't delete this course. Please try again." }));
+        setCourseActionNotice({ type: "error", text: payload.error || "Couldn't delete this course. Please try again." });
         return;
       }
       onBack();
     } catch {
-      setCourseActionNotice({ type: "error", text: "Failed to delete course." });
+      setCourseActionNotice({ type: "error", text: "Couldn't delete this course. Please try again." });
     } finally {
       setDeletingCourse(false);
     }
@@ -704,8 +751,8 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
         }),
       });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "Failed to submit feedback." }));
-        setFeedbackStatus({ type: "error", text: payload.error || "Failed to submit feedback." });
+        const payload = await response.json().catch(() => ({ error: "Couldn't submit your feedback. Please try again." }));
+        setFeedbackStatus({ type: "error", text: payload.error || "Couldn't submit your feedback. Please try again." });
         return;
       }
       setFeedbackAnswers({});
@@ -714,7 +761,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
       setFeedbackSubmitAcknowledged(true);
       setFeedbackStatus({ type: "success", text: "Feedback submitted. This task is now complete." });
     } catch {
-      setFeedbackStatus({ type: "error", text: "Failed to submit feedback." });
+      setFeedbackStatus({ type: "error", text: "Couldn't submit your feedback. Please try again." });
     } finally {
       setSubmittingFeedback(false);
     }
@@ -1692,6 +1739,113 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
             </table>
           )}
           </div>
+
+          {/* ── Feedback Text Response Summariser ── */}
+          {role === "faculty" && (
+            <div className="moodle-card p-6 space-y-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800">Feedback Text Responses</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">AI-generated summaries of student open-ended feedback.</p>
+                </div>
+                {textFeedbackLoading && <Loader2 size={18} className="animate-spin text-slate-400" />}
+              </div>
+
+              {!textFeedbackLoading && textFeedbackData.length === 0 && (
+                <p className="text-sm text-slate-400 italic">No text-based feedback questions found for this course yet.</p>
+              )}
+
+              {textFeedbackData.map((q) => {
+                const qs = feedbackSummaries[q.question_id];
+                const showResponses = !!expandedResponses[q.question_id];
+                const setShowResponses = (val: boolean | ((prev: boolean) => boolean)) =>
+                  setExpandedResponses(prev => ({
+                    ...prev,
+                    [q.question_id]: typeof val === 'function' ? val(!!prev[q.question_id]) : val,
+                  }));
+                return (
+                  <div key={q.question_id} className="border border-slate-200 rounded-xl overflow-hidden">
+                    {/* Question header */}
+                    <div className="px-5 py-4 bg-slate-50 border-b border-slate-100">
+                      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Question {q.question_order}</p>
+                      <p className="text-sm font-semibold text-slate-800">{q.question_text}</p>
+                      <p className="text-xs text-slate-500 mt-1">{q.responses.length} response{q.responses.length !== 1 ? 's' : ''}</p>
+                    </div>
+
+                    <div className="px-5 py-4 space-y-4">
+                      {/* AI Summary card */}
+                      {qs?.summary && (
+                        <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 space-y-2">
+                          <div className="flex items-center gap-2 text-moodle-blue">
+                            <Sparkles size={14} />
+                            <span className="text-xs font-bold uppercase tracking-wider">AI Summary</span>
+                          </div>
+                          <p className="text-sm text-slate-700 leading-relaxed">{qs.summary}</p>
+                          {qs.keyTakeaways.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {qs.keyTakeaways.map((kt, ki) => (
+                                <div key={ki} className="flex items-start gap-2 text-xs text-slate-600">
+                                  <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[9px] font-bold shrink-0 mt-0.5">{ki + 1}</span>
+                                  <span>{kt}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Generate summary button */}
+                      {q.responses.length > 0 && !qs?.summary && (
+                        <button
+                          onClick={() => generateFeedbackSummary(q)}
+                          disabled={qs?.loading}
+                          className="flex items-center gap-2 px-4 py-2 bg-moodle-blue text-white rounded-lg text-xs font-bold hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          {qs?.loading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+                          {qs?.loading ? "Generating Summary…" : "Summarise All Responses"}
+                        </button>
+                      )}
+
+                      {/* Regenerate if already done */}
+                      {qs?.summary && (
+                        <button
+                          onClick={() => generateFeedbackSummary(q)}
+                          disabled={qs?.loading}
+                          className="flex items-center gap-2 px-3 py-1.5 border border-slate-300 text-slate-600 rounded-lg text-xs font-semibold hover:border-moodle-blue hover:text-moodle-blue disabled:opacity-50"
+                        >
+                          {qs?.loading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                          Regenerate
+                        </button>
+                      )}
+
+                      {/* Individual responses toggle */}
+                      {q.responses.length > 0 && (
+                        <div>
+                          <button
+                            onClick={() => setShowResponses(s => !s)}
+                            className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors"
+                          >
+                            {showResponses ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                            {showResponses ? "Hide" : "Show"} individual responses ({q.responses.length})
+                          </button>
+                          {showResponses && (
+                            <div className="mt-3 space-y-2 max-h-64 overflow-y-auto">
+                              {q.responses.map((r, ri) => (
+                                <div key={ri} className="bg-slate-50 border border-slate-100 rounded-lg px-4 py-3">
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{r.student_name}</p>
+                                  <p className="text-sm text-slate-700 leading-relaxed">{r.answer_text}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -224,7 +224,18 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
 
   return (
     <div className="h-full flex flex-col bg-white text-slate-900 overflow-hidden relative">
-      
+
+      {/* Floating Chat Button */}
+      {!showChat && (
+        <button
+          onClick={() => setShowChat(true)}
+          title="Ask Ekosh AI"
+          className="fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-moodle-blue text-white shadow-lg hover:bg-blue-700 transition-colors flex items-center justify-center"
+        >
+          <MessageCircle size={24} />
+        </button>
+      )}
+
       {/* Drawer: Saved Notes */}
       {showNotes && (
         <div className="absolute inset-0 z-50 flex justify-end">
@@ -363,9 +374,6 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
               </button>
             ))}
           </div>
-          <button onClick={() => setShowChat(true)} className="p-2 text-slate-500 hover:text-moodle-blue bg-slate-100 rounded">
-            <MessageCircle size={18} />
-          </button>
           <button 
             onClick={handleStartQuiz}
             className="moodle-btn-primary px-4 py-1.5 text-sm shadow-sm flex items-center space-x-2"

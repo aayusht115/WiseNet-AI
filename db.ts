@@ -171,6 +171,8 @@ async function ensureSchema() {
       start_time TEXT,
       end_time TEXT,
       mode TEXT DEFAULT 'classroom',
+      session_status TEXT DEFAULT 'scheduled' CHECK (session_status IN ('scheduled','completed','cancelled','rescheduled')),
+      original_date DATE,
       created_by INTEGER REFERENCES users(id),
       created_at TIMESTAMPTZ DEFAULT NOW()
     );

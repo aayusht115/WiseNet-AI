@@ -29,6 +29,7 @@ interface LayoutProps {
   role: UserRole;
   user: User;
   onLogout: () => void;
+  onSelectCourse?: (courseId: number) => void;
 }
 
 const NavItem: React.FC<{ 
@@ -67,10 +68,13 @@ const SidebarItem: React.FC<{
   </button>
 );
 
-const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout }) => {
+const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout, onSelectCourse }) => {
   const TIME_OVERRIDE_KEY = "wisenet_time_override";
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [showCoursesMenu, setShowCoursesMenu] = useState(false);
+  const [enrolledCourses, setEnrolledCourses] = useState<{ id: number; name: string; code: string }[]>([]);
+  const [coursesLoading, setCoursesLoading] = useState(false);
   const [isTimeDialogOpen, setIsTimeDialogOpen] = useState(false);
   const [activeTimeOverride, setActiveTimeOverride] = useState<string>("");
   const [timeInputValue, setTimeInputValue] = useState<string>("");
@@ -105,6 +109,18 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
     setTimeInputValue("");
     window.dispatchEvent(new CustomEvent("wisenet-time-override-updated"));
     setIsTimeDialogOpen(false);
+  };
+
+  const toggleCoursesMenu = () => {
+    if (!showCoursesMenu && enrolledCourses.length === 0 && !coursesLoading) {
+      setCoursesLoading(true);
+      fetch('/api/courses')
+        .then(r => r.ok ? r.json() : [])
+        .then((data: any[]) => setEnrolledCourses(data.map(c => ({ id: c.id, name: c.name, code: c.code }))))
+        .catch(() => {})
+        .finally(() => setCoursesLoading(false));
+    }
+    setShowCoursesMenu(v => !v);
   };
 
   const getBreadcrumbs = () => {
@@ -331,12 +347,49 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                   active={activeTab === NavigationTab.DASHBOARD}
                   onClick={() => onTabChange(NavigationTab.DASHBOARD)}
                 />
-                <SidebarItem
-                  icon={<BookOpen size={18} />}
-                  label="My courses"
-                  active={activeTab === NavigationTab.COURSE_MANAGEMENT}
-                  onClick={() => onTabChange(NavigationTab.DASHBOARD)}
-                />
+                {/* My courses — expandable dropdown */}
+                <div>
+                  <button
+                    onClick={toggleCoursesMenu}
+                    className={`w-full flex items-center space-x-3 px-4 py-3 rounded-md transition-all duration-200 ${
+                      activeTab === NavigationTab.COURSE_MANAGEMENT
+                        ? 'bg-blue-50 text-moodle-blue font-semibold border-l-4 border-moodle-blue'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className={activeTab === NavigationTab.COURSE_MANAGEMENT ? 'text-moodle-blue' : 'text-slate-400'}>
+                      <BookOpen size={18} />
+                    </span>
+                    <span className="text-sm flex-1 text-left">My courses</span>
+                    <ChevronRight
+                      size={14}
+                      className={`text-slate-400 transition-transform ${showCoursesMenu ? 'rotate-90' : ''}`}
+                    />
+                  </button>
+                  {showCoursesMenu && (
+                    <div className="ml-4 mt-0.5 space-y-0.5">
+                      {coursesLoading ? (
+                        <p className="text-xs text-slate-400 px-4 py-2">Loading…</p>
+                      ) : enrolledCourses.length === 0 ? (
+                        <p className="text-xs text-slate-400 px-4 py-2 italic">No enrolled courses.</p>
+                      ) : (
+                        enrolledCourses.map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => {
+                              if (onSelectCourse) onSelectCourse(c.id);
+                              setShowCoursesMenu(false);
+                            }}
+                            className="w-full text-left px-4 py-2 rounded-md text-xs text-slate-700 hover:bg-blue-50 hover:text-moodle-blue transition-colors truncate"
+                          >
+                            <span className="font-semibold">{c.code}</span>
+                            <span className="text-slate-400"> · {c.name}</span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
 
                 <div className="pt-4 pb-2 px-4 text-xs font-bold text-slate-400 uppercase tracking-wider">AI Enhancements</div>
                 <SidebarItem 
@@ -377,12 +430,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                   label="My courses" 
                   active={activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT}
                   onClick={() => onTabChange(NavigationTab.FACULTY_SETUP)}
-                />
-                <SidebarItem
-                  icon={<PieChart size={18} />}
-                  label="Class Analytics"
-                  active={activeTab === NavigationTab.FACULTY_ANALYTICS}
-                  onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
                 />
                 <SidebarItem
                   icon={<CalendarDays size={18} />}

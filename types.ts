@@ -114,6 +114,7 @@ export interface SummaryResult {
   title: string;
   summary: string;
   keyTakeaways: string[];
+  keyTakeawayLabels?: string[];
   furtherReading: string[];
   soWhat?: string;
   keyConcepts?: { title: string; description: string }[];

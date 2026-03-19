@@ -21,6 +21,7 @@ type SummaryPayload = {
   title: string;
   summary: string;
   keyTakeaways: string[];
+  keyTakeawayLabels?: string[];
   furtherReading: string[];
 };
 
@@ -476,6 +477,14 @@ function shuffle<T>(arr: T[]): T[] {
   return copy;
 }
 
+function splitSentences(text: string) {
+  return text
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 40);
+}
+
 function extractKeywords(text: string) {
   const words = text.match(/[A-Za-z][A-Za-z'-]{4,}/g) || [];
   return [...new Set(words.map((w) => w.trim()))].filter(
@@ -525,7 +534,17 @@ function isBoilerplate(sentence: string): boolean {
   return BOILERPLATE_PATTERNS.some((p) => p.test(trimmed));
 }
 
-function buildTFIDFSummaryPayload(title: string, content: string): SummaryPayload {
+function jaccardSimilarity(a: string, b: string): number {
+  const tokenize = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3));
+  const setA = tokenize(a);
+  const setB = tokenize(b);
+  let intersection = 0;
+  for (const t of setA) if (setB.has(t)) intersection++;
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function buildTFIDFSummaryPayload(title: string, content: string, detailLevel: "Brief" | "Standard" | "Detailed" = "Standard"): SummaryPayload {
   // Strip endnotes before processing
   const cleanedContent = stripEndnotesSection(content);
   const sentences = splitSentences(cleanedContent).filter(
@@ -593,13 +612,25 @@ function buildTFIDFSummaryPayload(title: string, content: string): SummaryPayloa
   const summaryIndices = ranked.slice(0, summaryCount).map((x) => x.i).sort((a, b) => a - b);
   const summary = summaryIndices.map((i) => sentences[i]).join(" ");
 
+  // Vary number of takeaways based on detail level
+  const maxTakeaways = detailLevel === "Brief" ? 3 : detailLevel === "Detailed" ? 7 : 5;
+
   const usedSet = new Set(summaryIndices);
-  const takeawayIndices = ranked
-    .filter((x) => !usedSet.has(x.i))
-    .slice(0, 6)
-    .map((x) => x.i)
-    .sort((a, b) => a - b);
-  let keyTakeaways = takeawayIndices.map((i) => sentences[i]);
+  const candidates = ranked.filter((x) => !usedSet.has(x.i));
+
+  // Deduplicate: skip sentences shorter than 60 chars or too similar to already-selected ones
+  const selectedTakeaways: string[] = [];
+  for (const { i } of candidates) {
+    if (selectedTakeaways.length >= maxTakeaways) break;
+    const sentence = sentences[i];
+    if (sentence.length < 60) continue;
+    const tooSimilar = selectedTakeaways.some((prev) => jaccardSimilarity(prev, sentence) > 0.5);
+    if (tooSimilar) continue;
+    // Truncate at nearest sentence boundary if over 180 chars
+    const truncated = sentence.length > 180 ? sentence.slice(0, 180).replace(/\s\S+$/, "") + "…" : sentence;
+    selectedTakeaways.push(truncated);
+  }
+  let keyTakeaways = selectedTakeaways;
 
   if (keyTakeaways.length < 3) {
     for (const i of summaryIndices) {
@@ -728,247 +759,134 @@ function stripLeadingBoilerplate(text: string): string {
   return stripped.length > 200 ? stripped : text;
 }
 
-// ---------------------------------------------------------------------------
-// Summariser helpers (ported from TTS Space)
-// ---------------------------------------------------------------------------
-
-/** Estimate token count: ~4 chars per token */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
-/** Split text on sentence boundaries */
-function splitSentences(text: string): string[] {
-  const cleaned = text.replace(/\s+/g, " ").trim();
-  if (!cleaned) return [];
-  return cleaned.split(/(?<=[.!?])\s+/).filter((s) => s.trim());
-}
-
-/** Break a single oversized unit into word-capped sub-chunks */
-function splitOversizedUnit(unit: string, maxTokens: number): string[] {
-  unit = unit.trim();
-  if (!unit) return [];
-  const words = unit.split(" ");
-  const wordsPerChunk = Math.max(40, Math.floor(maxTokens * 0.72));
-  const chunks: string[] = [];
-  for (let i = 0; i < words.length; i += wordsPerChunk) {
-    const chunk = words.slice(i, i + wordsPerChunk).join(" ").trim();
-    if (chunk) chunks.push(chunk);
-  }
-  return chunks;
-}
-
-/** Split text into token-budget chunks, respecting sentence boundaries */
-function chunkTextForModel(text: string, tokenBudget: number): string[] {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) return [];
-  const sentences = splitSentences(normalized);
-  const units = sentences.length > 0 ? sentences : [normalized];
-  const chunks: string[] = [];
-  let currentUnits: string[] = [];
-  let currentTokens = 0;
-  for (const unit of units) {
-    const unitTokens = estimateTokens(unit);
-    if (unitTokens > tokenBudget) {
-      if (currentUnits.length > 0) {
-        chunks.push(currentUnits.join(" ").trim());
-        currentUnits = [];
-        currentTokens = 0;
-      }
-      chunks.push(...splitOversizedUnit(unit, tokenBudget));
-      continue;
-    }
-    if (currentUnits.length > 0 && currentTokens + unitTokens > tokenBudget) {
-      chunks.push(currentUnits.join(" ").trim());
-      currentUnits = [unit];
-      currentTokens = unitTokens;
-    } else {
-      currentUnits.push(unit);
-      currentTokens += unitTokens;
-    }
-  }
-  if (currentUnits.length > 0) chunks.push(currentUnits.join(" ").trim());
-  return chunks.filter((c) => c);
-}
-
-/** Ensure text ends with a complete sentence */
-function ensureCompleteSentence(text: string): string {
-  const cleaned = text.replace(/\s+/g, " ").trim();
-  if (!cleaned) return "";
-  if ([".","!","?"].includes(cleaned[cleaned.length - 1])) return cleaned;
-  const lastPunc = Math.max(cleaned.lastIndexOf("."), cleaned.lastIndexOf("!"), cleaned.lastIndexOf("?"));
-  if (lastPunc >= cleaned.length * 0.55) return cleaned.slice(0, lastPunc + 1).trim();
-  return `${cleaned}.`;
-}
-
-/** Detect obviously bad/low-quality model output */
-function isLowQualitySummary(sourceText: string, summaryText: string): boolean {
-  const summary = summaryText.trim();
-  if (!summary) return true;
-  if (summary.toLowerCase().includes("<unk>")) return true;
-  if (/^(the text|this text|the document)\b/i.test(summary)) return true;
-  const outWords = summary.split(" ");
-  const srcWords = sourceText.split(" ");
-  if (outWords.length < 4) return true;
-  if (srcWords.length >= 12 && outWords.length >= srcWords.length) return true;
-  const uniqueRatio = new Set(outWords).size / Math.max(1, outWords.length);
-  if (outWords.length >= 12 && uniqueRatio < 0.35) return true;
-  return false;
-}
-
-/** Target word count for output based on detail level */
-function resolveTargetWords(
-  detailLevel: "Brief" | "Standard" | "Detailed",
-  sourceWordCount: number
-): number {
-  if (detailLevel === "Brief") {
-    return Math.max(90, Math.min(190, Math.floor(sourceWordCount * 0.15)));
-  }
-  if (detailLevel === "Detailed") {
-    return Math.max(220, Math.min(440, Math.floor(sourceWordCount * 0.36)));
-  }
-  return Math.max(150, Math.min(330, Math.floor(sourceWordCount * 0.24)));
-}
-
-/** Target words per chunk when processing in sections */
-function targetWordsForChunk(maxLenWords: number, chunkCount: number): number {
-  const scaleBase = Math.max(1, Math.min(chunkCount, 6));
-  return Math.max(46, Math.min(180, Math.floor((maxLenWords * 1.8) / scaleBase)));
+/**
+ * Smart-sample a document so the summarisation model receives the most
+ * informative portion within its token budget.
+ * Priority: beginning (intro/abstract) >> end (conclusion) >> middle.
+ */
+function sampleForSummarization(text: string, maxChars = 3600): string {
+  if (text.length <= maxChars) return text;
+  const head = Math.floor(maxChars * 0.65);
+  const tail = maxChars - head;
+  return text.slice(0, head) + "\n\n[...]\n\n" + text.slice(-tail);
 }
 
 /**
- * Single HuggingFace chat-completions call for one piece of text.
- * Uses router.huggingface.co/v1/chat/completions (the new endpoint).
+ * Split a long text into chunks of at most `maxChars` characters,
+ * always breaking at a sentence boundary to avoid mid-sentence cuts.
  */
-async function hfChatSummarize(
-  text: string,
-  targetWords: number,
-  phase: "full" | "chunk" | "merge",
-  model: string,
-  token: string
-): Promise<string> {
-  const systemMsg =
-    "You are a precise summarizer. Preserve key facts, chronology, and speaker perspective. " +
-    "Do not add or change meaning. Preserve the source narrative person (first/second/third).";
-
-  let taskMsg: string;
-  if (phase === "chunk") {
-    taskMsg = `Summarize this section from a longer document in about ${targetWords} words. Keep important entities, facts, and chronology.`;
-  } else if (phase === "merge") {
-    taskMsg = `Write one coherent paragraph in about ${targetWords} words that summarizes the whole document using the provided section summaries. Keep context and key points intact.`;
-  } else {
-    taskMsg = `Summarize the following text in about ${targetWords} words. Keep the central message and context intact.`;
+function splitIntoChunks(text: string, maxChars = 3000): string[] {
+  const sentences = splitSentences(text);
+  const chunks: string[] = [];
+  let current = "";
+  for (const s of sentences) {
+    if (current.length + s.length + 1 > maxChars && current.length > 0) {
+      chunks.push(current.trim());
+      current = s;
+    } else {
+      current = current ? current + " " + s : s;
+    }
   }
+  if (current.trim().length > 0) chunks.push(current.trim());
+  return chunks.filter((c) => c.length >= 100);
+}
 
-  const userMsg = `${taskMsg}\n\nText:\n${text}\n\nSummary:`;
-
-  const res = await fetch("https://router.huggingface.co/v1/chat/completions", {
+/**
+ * Single call to the BART (or configured HF model) summarization endpoint.
+ */
+async function callBartAPI(
+  url: string,
+  token: string,
+  text: string,
+  params: { max_length: number; min_length: number }
+): Promise<string> {
+  const res = await fetch(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemMsg },
-        { role: "user", content: userMsg },
-      ],
-      max_tokens: Math.max(64, Math.floor(targetWords * 1.5)),
-      temperature: 0,
+      inputs: text,
+      parameters: { ...params, do_sample: false, truncation: true },
+      options: { wait_for_model: true },
     }),
   });
-
   if (!res.ok) {
-    const errBody = await res.text();
-    throw new Error(`HuggingFace API error ${res.status}: ${errBody.slice(0, 300)}`);
+    const err = await res.text();
+    throw new Error(`HuggingFace API error ${res.status}: ${err.slice(0, 300)}`);
   }
-
   const data = (await res.json()) as any;
-  const raw: string = data?.choices?.[0]?.message?.content ?? "";
-  // Strip any "Summary:" prefix the model might echo back
-  return raw.replace(/^(summary|tl;dr)\s*:\s*/i, "").trim();
+  const txt = Array.isArray(data) ? data[0]?.summary_text : data?.summary_text;
+  if (!txt) throw new Error("No summary returned by HuggingFace model");
+  return String(txt).trim();
 }
 
-// ---------------------------------------------------------------------------
-// Primary summariser
-// ---------------------------------------------------------------------------
-
 /**
- * Summarises content using HuggingFace chat completions (router.huggingface.co).
- * Features: proper chunking + merge, quality validation, fallback to TF-IDF.
+ * Primary summariser — uses facebook/bart-large-cnn via the HuggingFace
+ * Inference API (free tier, just needs a read token from huggingface.co).
  *
- * Set HF_TOKEN in .env.local.
- * Override model with HF_MODEL env var (must be a chat/instruct model on HF router).
+ * Set HUGGINGFACE_API_KEY in your .env file.
+ * Optionally override the model with HF_MODEL (must be a summarization pipeline).
  */
-async function summarizeWithAI(
-  title: string,
-  content: string,
-  detailLevel: "Brief" | "Standard" | "Detailed" = "Standard"
-): Promise<SummaryPayload> {
-  const token = process.env.HF_TOKEN;
-  if (!token) throw new Error("HF_TOKEN not configured");
+async function summarizeWithAI(title: string, content: string, detailLevel: "Brief" | "Standard" | "Detailed" = "Standard"): Promise<SummaryPayload> {
+  const token = process.env.HUGGINGFACE_API_KEY;
+  if (!token) throw new Error("HUGGINGFACE_API_KEY not configured");
 
-  const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
+  const model = process.env.HF_MODEL || "facebook/bart-large-cnn";
+  const url = `https://api-inference.huggingface.co/models/${model}`;
+
   const cleaned = stripLeadingBoilerplate(content);
-  const sourceWordCount = cleaned.split(/\s+/).length;
-  const maxLenWords = resolveTargetWords(detailLevel, sourceWordCount);
 
-  // ~3000 token budget per chunk (leaves room for system + task prompts)
-  const TOKEN_BUDGET = 3000;
-  const sourceTokens = estimateTokens(cleaned);
+  // ── Chunked / hierarchical summarisation ──────────────────────────────
+  // 1. Split into ~3 000-char chunks (sentence boundaries).
+  // 2. Summarise each chunk independently → mini-summaries.
+  // 3. Summarise the mini-summaries → final summary.
+  // 4. Expose mini-summaries as labeled key takeaways (no TF-IDF gibberish).
+  // ─────────────────────────────────────────────────────────────────────
+  const CHUNK_SIZE = 3000;
+  const chunks = splitIntoChunks(cleaned, CHUNK_SIZE);
 
-  let summaryText: string;
+  // Mini-summary params: keep them concise so the final pass has room.
+  const miniParams = { max_length: 150, min_length: 30 };
 
-  if (sourceTokens <= TOKEN_BUDGET) {
-    // Fits in one shot
-    summaryText = await hfChatSummarize(cleaned, Math.max(50, Math.min(340, maxLenWords)), "full", model, token);
+  // Summarise each chunk in sequence (HF free tier has rate limits).
+  const miniSummaries: string[] = [];
+  for (const chunk of chunks) {
+    const mini = await callBartAPI(url, token, chunk, miniParams);
+    miniSummaries.push(mini);
+  }
+
+  // Final summary length based on detail level.
+  const finalParams =
+    detailLevel === "Brief"
+      ? { max_length: 220, min_length: 60 }
+      : detailLevel === "Detailed"
+      ? { max_length: 650, min_length: 200 }
+      : { max_length: 450, min_length: 120 };
+
+  let finalSummary: string;
+  const combinedMinis = miniSummaries.join(" ");
+  if (miniSummaries.length > 1) {
+    // Summarise the mini summaries for a coherent final overview.
+    finalSummary = await callBartAPI(url, token, combinedMinis, finalParams);
   } else {
-    // Chunk → summarise each → merge
-    const chunks = chunkTextForModel(cleaned, TOKEN_BUDGET);
-    const perChunkTarget = targetWordsForChunk(maxLenWords, chunks.length);
-    const partials: string[] = [];
-
-    for (const chunk of chunks) {
-      const chunkSummary = await hfChatSummarize(chunk, perChunkTarget, "chunk", model, token);
-      if (chunkSummary) partials.push(chunkSummary);
-    }
-
-    let merged = partials.join(" ").trim();
-
-    // Collapse rounds if merged partials are still too long
-    let collapseRound = 0;
-    while (estimateTokens(merged) > TOKEN_BUDGET && collapseRound < 2) {
-      collapseRound++;
-      const mergeChunks = chunkTextForModel(merged, TOKEN_BUDGET);
-      const mergeTarget = Math.max(60, Math.min(220, targetWordsForChunk(maxLenWords, mergeChunks.length)));
-      const nextPartials: string[] = [];
-      for (const mc of mergeChunks) {
-        const s = await hfChatSummarize(mc, mergeTarget, "merge", model, token);
-        if (s) nextPartials.push(s);
-      }
-      merged = nextPartials.join(" ").trim();
-    }
-
-    // Final pass over merged partials
-    summaryText = await hfChatSummarize(merged, Math.max(40, Math.min(220, maxLenWords)), "merge", model, token);
+    // Only one chunk — use as final summary directly (already inside length).
+    finalSummary = miniSummaries[0] || combinedMinis;
   }
 
-  summaryText = ensureCompleteSentence(summaryText);
+  // Labels for key takeaways (one per chunk).
+  const labels =
+    miniSummaries.length === 1
+      ? ["Key Insight"]
+      : miniSummaries.map((_, i) => `Part ${i + 1}`);
 
-  // Quality gate — if output is bad, throw so the caller falls back to TF-IDF
-  if (isLowQualitySummary(cleaned, summaryText)) {
-    throw new Error("HuggingFace returned low-quality summary — falling back to TF-IDF");
-  }
-
-  // Use TF-IDF on the cleaned full text for key takeaways & further reading
-  const tfidf = buildTFIDFSummaryPayload(title, cleaned);
+  // TF-IDF only for further reading suggestions (avoids the gibberish takeaway issue).
+  const tfidf = buildTFIDFSummaryPayload(title, cleaned, detailLevel);
 
   return {
     title,
-    summary: summaryText,
-    keyTakeaways: tfidf.keyTakeaways.length >= 3 ? tfidf.keyTakeaways.slice(0, 5) : tfidf.keyTakeaways,
-    furtherReading: tfidf.furtherReading.slice(0, 3),
+    summary: finalSummary,
+    keyTakeaways: miniSummaries,
+    keyTakeawayLabels: labels,
+    furtherReading: tfidf.furtherReading.slice(0, detailLevel === "Detailed" ? 5 : 3),
   };
 }
 
@@ -1432,6 +1350,9 @@ async function ensureFeedbackInsightForForm(formId: number, nowOverride: string 
 async function startServer() {
   try {
     await initDb();
+    // Runtime migrations for session tracking columns
+    await execute(`ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS session_status TEXT DEFAULT 'scheduled' CHECK (session_status IN ('scheduled','completed','cancelled','rescheduled'))`).catch(() => {});
+    await execute(`ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS original_date DATE`).catch(() => {});
   } catch (dbError) {
     console.warn("⚠️  Database unavailable — server starting in degraded mode (DB features will return 503):", (dbError as Error).message);
   }
@@ -1498,13 +1419,17 @@ async function startServer() {
     try {
       const title = String(req.body?.title || "Untitled Reading");
       const content = String(req.body?.content || "");
+      const rawLevel = String(req.body?.detailLevel || "Standard");
+      const detailLevel: "Brief" | "Standard" | "Detailed" = ["Brief", "Standard", "Detailed"].includes(rawLevel)
+        ? (rawLevel as "Brief" | "Standard" | "Detailed")
+        : "Standard";
       if (!content.trim()) return res.status(400).json({ error: "Content is required" });
       let result: SummaryPayload;
       try {
-        result = await summarizeWithAI(title, content);
+        result = await summarizeWithAI(title, content, detailLevel);
       } catch (error) {
         console.error("AI summarize failed, falling back to TF-IDF", error);
-        result = buildTFIDFSummaryPayload(title, content);
+        result = buildTFIDFSummaryPayload(title, content, detailLevel);
       }
       res.json(result);
     } catch (error: any) {
@@ -2867,6 +2792,87 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Faculty: fetch all text-type question responses for a course (for AI feedback summariser).
+  app.get("/api/courses/:id/feedback/text-responses", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const courseId = Number(req.params.id);
+    if (!(await canManageCourse(req.user, courseId))) return res.status(403).json({ error: "Forbidden" });
+    try {
+      // Get all text questions for this course's feedback forms
+      const questions = await query<any>(
+        `SELECT fq.id, fq.question_order, fq.question_text
+         FROM feedback_questions fq
+         JOIN feedback_forms ff ON ff.id = fq.form_id
+         WHERE ff.course_id = $1 AND fq.question_type = 'text'
+         ORDER BY ff.trigger_session_number, fq.question_order`,
+        [courseId]
+      );
+      if (questions.length === 0) return res.json([]);
+
+      // For each question collect student responses with names
+      const result = [];
+      for (const q of questions) {
+        const rows = await query<any>(
+          `SELECT u.name AS student_name, a.answer_text
+           FROM (
+             SELECT fs.user_id,
+                    jsonb_array_elements(fs.answers) AS elem
+             FROM feedback_submissions fs
+             JOIN feedback_questions fq2 ON fq2.id = $1
+             WHERE fs.form_id = fq2.form_id
+           ) a
+           JOIN users u ON u.id = a.user_id
+           WHERE (a.elem->>'question_id')::int = $1
+             AND a.elem->>'answer_text' IS NOT NULL
+             AND trim(a.elem->>'answer_text') <> ''`,
+          [q.id]
+        );
+        result.push({
+          question_id: q.id,
+          question_order: q.question_order,
+          question_text: q.question_text,
+          responses: rows.map((r: any) => ({
+            student_name: r.student_name,
+            answer_text: String(r.answer_text || "").trim(),
+          })).filter((r: any) => r.answer_text),
+        });
+      }
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to fetch text responses" });
+    }
+  });
+
+  // AI: summarise a set of free-text feedback answers for one question.
+  app.post("/api/ai/feedback-summary", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    try {
+      const questionText = String(req.body?.questionText || "").trim();
+      const answers: string[] = Array.isArray(req.body?.answers) ? req.body.answers.map(String) : [];
+      if (!questionText || answers.length === 0) {
+        return res.status(400).json({ error: "questionText and answers[] are required" });
+      }
+      // Build a combined document: question + numbered student answers
+      const combined =
+        `Question: ${questionText}\n\nStudent responses:\n` +
+        answers.map((a, i) => `${i + 1}. ${a}`).join("\n");
+
+      // Run through AI summariser (handles chunking internally if needed)
+      let summaryPayload: SummaryPayload;
+      try {
+        summaryPayload = await summarizeWithAI("Feedback Responses", combined, "Standard");
+      } catch {
+        summaryPayload = buildTFIDFSummaryPayload("Feedback Responses", combined, "Standard");
+      }
+      res.json({
+        summary: summaryPayload.summary,
+        keyTakeaways: summaryPayload.keyTakeaways.slice(0, 5),
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to generate feedback summary" });
+    }
+  });
+
   app.get("/api/course-details/:id", authenticate, async (req: any, res) => {
     const courseId = Number(req.params.id);
     if (!(await canAccessCourse(req.user, courseId))) {
@@ -3141,7 +3147,7 @@ async function startServer() {
     try {
       summary = await summarizeWithAI(String(title), materialContent);
     } catch (error) {
-      console.error("HuggingFace summarize failed during material upload, falling back to TF-IDF", error);
+      console.error("Gemini summarize failed during material upload, falling back to TF-IDF", error);
       summary = buildFallbackSummaryPayload(String(title), materialContent);
     }
     const quizSource = `${summary.summary || ""}. ${(summary.keyTakeaways || []).join(". ")}`.trim();
@@ -3749,9 +3755,13 @@ async function startServer() {
         rows = await query<any>(
           `SELECT cs.id, cs.course_id, cs.session_number, cs.title AS session_title,
                   cs.session_date, cs.start_time, cs.end_time, cs.mode,
-                  c.name AS course_name, c.code AS course_code
+                  COALESCE(cs.session_status, 'scheduled') AS session_status,
+                  cs.original_date,
+                  c.name AS course_name, c.code AS course_code,
+                  u.name AS faculty_name
            FROM course_sessions cs
            JOIN courses c ON c.id = cs.course_id
+           JOIN users u ON u.id = c.created_by
            WHERE c.created_by = $1
            ORDER BY cs.session_date, cs.start_time`,
           [user.id]
@@ -3760,9 +3770,13 @@ async function startServer() {
         rows = await query<any>(
           `SELECT cs.id, cs.course_id, cs.session_number, cs.title AS session_title,
                   cs.session_date, cs.start_time, cs.end_time, cs.mode,
-                  c.name AS course_name, c.code AS course_code
+                  COALESCE(cs.session_status, 'scheduled') AS session_status,
+                  cs.original_date,
+                  c.name AS course_name, c.code AS course_code,
+                  u.name AS faculty_name
            FROM course_sessions cs
            JOIN courses c ON c.id = cs.course_id
+           JOIN users u ON u.id = c.created_by
            JOIN enrollments e ON e.course_id = c.id AND e.user_id = $1
            ORDER BY cs.session_date, cs.start_time`,
           [user.id]
@@ -3771,6 +3785,78 @@ async function startServer() {
       res.json(rows);
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Failed to fetch calendar" });
+    }
+  });
+
+  // Faculty: update session status (completed / cancelled)
+  app.patch("/api/sessions/:id/status", authenticate, async (req: any, res) => {
+    try {
+      const user = req.user;
+      if (user.role !== "faculty") return res.status(403).json({ error: "Faculty only" });
+      const sessionId = Number(req.params.id);
+      const rawStatus = String(req.body?.status || "");
+      const validStatuses = ["completed", "cancelled"];
+      if (!validStatuses.includes(rawStatus)) return res.status(400).json({ error: "Invalid status. Must be 'completed' or 'cancelled'." });
+      // Verify faculty owns the course
+      const session = await queryOne<any>(
+        `SELECT cs.id FROM course_sessions cs JOIN courses c ON c.id = cs.course_id WHERE cs.id = $1 AND c.created_by = $2`,
+        [sessionId, user.id]
+      );
+      if (!session) return res.status(404).json({ error: "Session not found." });
+      await execute(`UPDATE course_sessions SET session_status = $1 WHERE id = $2`, [rawStatus, sessionId]);
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to update session status" });
+    }
+  });
+
+  // Faculty: reschedule a session
+  app.patch("/api/sessions/:id/reschedule", authenticate, async (req: any, res) => {
+    try {
+      const user = req.user;
+      if (user.role !== "faculty") return res.status(403).json({ error: "Faculty only" });
+      const sessionId = Number(req.params.id);
+      const newDate = String(req.body?.session_date || "");
+      const newStart = req.body?.start_time ? String(req.body.start_time) : null;
+      const newEnd = req.body?.end_time ? String(req.body.end_time) : null;
+      if (!newDate || !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) return res.status(400).json({ error: "Invalid date. Use YYYY-MM-DD." });
+      // Verify faculty owns the course
+      const existing = await queryOne<any>(
+        `SELECT cs.id, cs.session_date FROM course_sessions cs JOIN courses c ON c.id = cs.course_id WHERE cs.id = $1 AND c.created_by = $2`,
+        [sessionId, user.id]
+      );
+      if (!existing) return res.status(404).json({ error: "Session not found." });
+      await execute(
+        `UPDATE course_sessions SET session_date = $1, start_time = COALESCE($2, start_time), end_time = COALESCE($3, end_time), session_status = 'rescheduled', original_date = COALESCE(original_date, $4) WHERE id = $5`,
+        [newDate, newStart, newEnd, existing.session_date, sessionId]
+      );
+      res.json({ ok: true });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to reschedule session" });
+    }
+  });
+
+  // Faculty: get past sessions still marked 'scheduled' (pending / missed)
+  app.get("/api/calendar/pending", authenticate, async (req: any, res) => {
+    try {
+      const user = req.user;
+      if (user.role !== "faculty") return res.status(403).json({ error: "Faculty only" });
+      const nowOverride = getNowOverride(req);
+      const today = nowOverride ? nowOverride.slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const rows = await query<any>(
+        `SELECT cs.id, cs.session_number, cs.title AS session_title, cs.session_date,
+                c.name AS course_name, c.code AS course_code
+         FROM course_sessions cs
+         JOIN courses c ON c.id = cs.course_id
+         WHERE c.created_by = $1
+           AND cs.session_date < $2
+           AND COALESCE(cs.session_status, 'scheduled') = 'scheduled'
+         ORDER BY cs.session_date`,
+        [user.id, today]
+      );
+      res.json(rows);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to fetch pending sessions" });
     }
   });
 

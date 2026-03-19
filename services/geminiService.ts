@@ -41,15 +41,15 @@ export const geminiService = {
   },
 
   async chatWithContent(_content: string, _message: string, _history: {role: 'user' | 'model', parts: {text: string}[]}[] = []): Promise<string> {
-    return "AI chat is currently unavailable. Please refer to the learning insights panel for a summary of this content.";
+    return "The AI assistant isn't available right now. You can still review the insights on the right panel.";
   },
 
-  async summarizeContent(title: string, content: string): Promise<SummaryResult> {
+  async summarizeContent(title: string, content: string, detailLevel: 'Brief' | 'Standard' | 'Detailed' = 'Standard'): Promise<SummaryResult> {
     try {
       const response = await fetch('/api/ai/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, content }),
+        body: JSON.stringify({ title, content, detailLevel }),
       });
       if (!response.ok) throw new Error('Summarization failed');
       return await response.json();

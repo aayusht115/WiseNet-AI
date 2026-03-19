@@ -22,6 +22,7 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activeSession, setActiveSession] = useState<PreReadSession | null>(null);
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [highlightMaterialId, setHighlightMaterialId] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -102,14 +103,18 @@ const App: React.FC = () => {
               setSelectedCourseId(id);
               setActiveTab(NavigationTab.COURSE_MANAGEMENT);
             }}
+            onOpenPreRead={(materialId) => {
+              setHighlightMaterialId(materialId);
+              setActiveTab(NavigationTab.BOOSTER);
+            }}
           />
         );
       case NavigationTab.PLANNER:
         return <Planner />;
       case NavigationTab.CALENDAR:
-        return <Calendar />;
+        return <Calendar role={user.role} />;
       case NavigationTab.BOOSTER:
-        return <PreReadBooster onStart={handleStartBooster} />;
+        return <PreReadBooster onStart={handleStartBooster} highlightMaterialId={highlightMaterialId} />;
       case NavigationTab.SUMMARIZER:
         return <Summarizer />;
       case NavigationTab.REFLECTIONS:
@@ -164,12 +169,16 @@ const App: React.FC = () => {
   };
 
   return (
-    <Layout 
-      activeTab={activeTab} 
-      onTabChange={setActiveTab} 
+    <Layout
+      activeTab={activeTab}
+      onTabChange={setActiveTab}
       role={user.role}
       user={user}
       onLogout={handleLogout}
+      onSelectCourse={(id) => {
+        setSelectedCourseId(id);
+        setActiveTab(NavigationTab.COURSE_MANAGEMENT);
+      }}
     >
       {renderContent()}
     </Layout>
