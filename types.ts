@@ -110,6 +110,15 @@ export interface StudyPlanItem {
   isWeakTopic?: boolean;
 }
 
+export interface ChatMessage {
+  id?: number;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at?: string;
+  /** True while the assistant response is still streaming */
+  streaming?: boolean;
+}
+
 export interface SummaryResult {
   title: string;
   summary: string;
@@ -135,7 +144,7 @@ export interface PreReadSession {
   estimatedTime: string;
   progress: number;
   status: 'not_started' | 'in_progress' | 'completed';
-  items: { id: string; title: string; type: 'pdf' | 'video' | 'article'; content: string; summary?: string; keyTakeaways?: string[] }[];
+  items: { id: string; title: string; type: 'pdf' | 'video' | 'article'; content: string; summary?: string; keyTakeaways?: string[]; source_url?: string | null }[];
 }
 
 export interface ReflectionPrompt {

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Zap, Clock, BookOpen, ChevronRight, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Zap, Clock, BookOpen, ChevronRight, CheckCircle2 } from 'lucide-react';
 import { PreReadSession } from '../types';
 
 interface PreReadBoosterProps {
@@ -65,8 +65,7 @@ const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart, highlightMater
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-6">
+      <div className="space-y-6">
           <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Active Sessions</h3>
           <div className="space-y-6">
             {loading ? (
@@ -154,56 +153,6 @@ const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart, highlightMater
               </div>
             )}
           </div>
-        </div>
-
-        <div className="space-y-6">
-          <div className="moodle-card p-6 border-l-4 border-l-moodle-blue relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-4 opacity-5 text-moodle-blue">
-              <Zap size={80} />
-            </div>
-            <h3 className="text-lg font-bold mb-4 flex items-center space-x-2 text-slate-800">
-              <AlertCircle size={20} className="text-moodle-blue" />
-              <span>Study Impact</span>
-            </h3>
-            <p className="text-slate-600 text-sm leading-relaxed mb-6">
-              Completing these pre-reads now will reduce your weekend review load by <span className="font-bold text-moodle-blue">4.5 hours</span>. 
-            </p>
-            <div className="bg-slate-50 rounded p-4 border border-slate-200">
-              <div className="text-xs font-bold text-slate-500 mb-3 uppercase tracking-wider">Weekend Load Projection</div>
-              <div className="flex items-end space-x-1 h-20">
-                <div className="w-3 h-12 bg-slate-200 rounded-t-sm"></div>
-                <div className="w-3 h-16 bg-slate-200 rounded-t-sm"></div>
-                <div className="w-3 h-10 bg-slate-200 rounded-t-sm"></div>
-                <div className="w-3 h-20 bg-slate-200 rounded-t-sm"></div>
-                <div className="w-3 h-8 bg-moodle-blue/40 rounded-t-sm"></div>
-                <div className="w-3 h-6 bg-moodle-blue/40 rounded-t-sm"></div>
-              </div>
-              <p className="text-[10px] mt-3 text-slate-400 italic">* Blue bars represent hours saved by Boosters.</p>
-            </div>
-          </div>
-
-          <div className="moodle-card p-6">
-            <h3 className="text-sm font-bold text-slate-900 mb-4 uppercase tracking-wider">Prime Benefits</h3>
-            <ul className="space-y-4">
-              {[
-                { title: 'Recall Speed', value: '+40%', desc: 'Mentioned by students who use Boosters.' },
-                { title: 'Confidence', value: 'High', desc: 'Pre-prime your brain for complex topics.' },
-                { title: 'Grade Impact', value: '+12%', desc: 'Based on historical cohort data.' }
-              ].map((benefit, i) => (
-                <li key={i} className="flex items-start space-x-3">
-                  <div className="w-1 h-10 bg-blue-100 rounded-full flex-shrink-0"></div>
-                  <div>
-                    <div className="flex items-center space-x-2">
-                      <span className="text-xs font-bold text-moodle-blue">{benefit.value}</span>
-                      <span className="text-xs font-bold text-slate-800">{benefit.title}</span>
-                    </div>
-                    <p className="text-[10px] text-slate-400">{benefit.desc}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
       </div>
     </div>
   );

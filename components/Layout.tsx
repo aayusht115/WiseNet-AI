@@ -1,11 +1,11 @@
 
-import React, { useEffect, useState } from 'react';
-import { 
-  LayoutDashboard, 
-  CalendarDays, 
-  FileText, 
-  Search, 
-  Bell, 
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  LayoutDashboard,
+  CalendarDays,
+  FileText,
+  Search,
+  Bell,
   UserCircle,
   Zap,
   Settings,
@@ -18,9 +18,23 @@ import {
   GraduationCap,
   BookOpen,
   Clock3,
-  RotateCcw
+  RotateCcw,
+  CheckCheck,
+  BookMarked,
+  ClipboardCheck
 } from 'lucide-react';
 import { NavigationTab, UserRole, User } from '../types';
+
+interface AppNotification {
+  id: number;
+  type: string;
+  title: string;
+  body: string;
+  course_id: number | null;
+  material_id: number | null;
+  is_read: boolean;
+  created_at: string;
+}
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -30,6 +44,8 @@ interface LayoutProps {
   user: User;
   onLogout: () => void;
   onSelectCourse?: (courseId: number) => void;
+  /** When true the padded breadcrumb wrapper is bypassed — used for full-screen pages like LearnMode */
+  noPadding?: boolean;
 }
 
 const NavItem: React.FC<{ 
@@ -68,7 +84,7 @@ const SidebarItem: React.FC<{
   </button>
 );
 
-const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout, onSelectCourse }) => {
+const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout, onSelectCourse, noPadding = false }) => {
   const TIME_OVERRIDE_KEY = "wisenet_time_override";
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -78,6 +94,71 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
   const [isTimeDialogOpen, setIsTimeDialogOpen] = useState(false);
   const [activeTimeOverride, setActiveTimeOverride] = useState<string>("");
   const [timeInputValue, setTimeInputValue] = useState<string>("");
+
+  // Notifications state
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  const fetchNotifications = async () => {
+    try {
+      const res = await fetch('/api/notifications?limit=20');
+      if (res.ok) {
+        const data = await res.json();
+        setNotifications(data.notifications ?? []);
+        setUnreadCount(data.unread_count ?? 0);
+      }
+    } catch (_) {}
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const interval = setInterval(fetchNotifications, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setIsNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const toggleNotifPanel = () => {
+    setIsNotifOpen(v => !v);
+  };
+
+  const markAllRead = async () => {
+    await fetch('/api/notifications/mark-read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    setUnreadCount(0);
+  };
+
+  const markOneRead = async (id: number) => {
+    await fetch('/api/notifications/mark-read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    setUnreadCount(prev => Math.max(0, prev - 1));
+  };
+
+  const formatNotifTime = (iso: string) => {
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = Math.floor((now.getTime() - d.getTime()) / 1000);
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  };
+
+  const getNotifIcon = (type: string) => {
+    if (type === 'quiz_result') return <ClipboardCheck size={14} className="shrink-0" />;
+    return <BookMarked size={14} className="shrink-0" />;
+  };
 
   const toLocalDateTimeInput = (isoString: string) => {
     const parsed = new Date(isoString);
@@ -143,9 +224,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
         break;
       case NavigationTab.CALENDAR:
         crumbs.push({ label: 'Course Calendar', tab: NavigationTab.CALENDAR });
-        break;
-      case NavigationTab.PLANNER:
-        crumbs.push({ label: 'Smart Planner', tab: NavigationTab.PLANNER });
         break;
       case NavigationTab.REPORTS:
         crumbs.push({ label: 'Learning Analytics', tab: NavigationTab.REPORTS });
@@ -242,10 +320,77 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
             {activeTimeOverride ? "Custom Time" : "Time"}
           </button>
 
-          <button className="p-2 text-slate-500 hover:text-moodle-blue transition-colors relative">
-            <Bell size={20} />
-            <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
-          </button>
+          {/* Notification Bell */}
+          <div className="relative" ref={notifRef}>
+            <button
+              onClick={toggleNotifPanel}
+              className="p-2 text-slate-500 hover:text-moodle-blue transition-colors relative"
+              aria-label="Notifications"
+            >
+              <Bell size={20} />
+              {unreadCount > 0 && (
+                <span className="absolute top-0.5 right-0.5 min-w-[16px] h-4 bg-red-500 rounded-full border-2 border-white flex items-center justify-center text-[9px] font-bold text-white px-0.5">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
+
+            {isNotifOpen && (
+              <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg border border-slate-200 shadow-xl z-50 flex flex-col overflow-hidden" style={{ maxHeight: '420px' }}>
+                {/* Header */}
+                <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 shrink-0">
+                  <span className="text-sm font-bold text-slate-800">Notifications</span>
+                  {unreadCount > 0 && (
+                    <button
+                      onClick={markAllRead}
+                      className="flex items-center gap-1 text-xs text-moodle-blue hover:underline font-medium"
+                    >
+                      <CheckCheck size={12} />
+                      Mark all read
+                    </button>
+                  )}
+                </div>
+
+                {/* List */}
+                <div className="overflow-y-auto flex-1">
+                  {notifications.length === 0 ? (
+                    <div className="py-10 text-center">
+                      <Bell size={28} className="mx-auto text-slate-200 mb-2" />
+                      <p className="text-xs text-slate-400 font-medium">You're all caught up!</p>
+                    </div>
+                  ) : (
+                    notifications.map(n => (
+                      <button
+                        key={n.id}
+                        onClick={() => !n.is_read && markOneRead(n.id)}
+                        className={`w-full text-left flex items-start gap-3 px-4 py-3 border-b border-slate-50 transition-colors ${
+                          n.is_read
+                            ? 'hover:bg-slate-50 opacity-60'
+                            : 'bg-blue-50/60 hover:bg-blue-50'
+                        }`}
+                      >
+                        <span className={`mt-0.5 ${n.is_read ? 'text-slate-400' : 'text-moodle-blue'}`}>
+                          {getNotifIcon(n.type)}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-xs leading-snug truncate ${n.is_read ? 'font-normal text-slate-600' : 'font-semibold text-slate-800'}`}>
+                            {n.title}
+                          </p>
+                          {n.body && (
+                            <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2 leading-tight">{n.body}</p>
+                          )}
+                          <p className="text-[10px] text-slate-400 mt-1">{formatNotifTime(n.created_at)}</p>
+                        </div>
+                        {!n.is_read && (
+                          <span className="w-2 h-2 bg-moodle-blue rounded-full shrink-0 mt-1.5"></span>
+                        )}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
           
           <button className="p-2 text-slate-500 hover:text-moodle-blue transition-colors">
             <MessageSquare size={20} />
@@ -404,12 +549,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                   active={activeTab === NavigationTab.CALENDAR}
                   onClick={() => onTabChange(NavigationTab.CALENDAR)}
                 />
-                <SidebarItem
-                  icon={<CalendarDays size={18} />}
-                  label="Smart Planner"
-                  active={activeTab === NavigationTab.PLANNER}
-                  onClick={() => onTabChange(NavigationTab.PLANNER)}
-                />
               </>
             ) : (
               <>
@@ -450,41 +589,50 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
 
         {/* Main Content Area */}
         <main className="flex-1 flex flex-col overflow-hidden bg-white">
-          {/* Page Header & Breadcrumbs */}
-          <div className="px-8 py-6 border-b border-slate-100 shrink-0 bg-slate-50/50">
-            <nav className="flex items-center space-x-2 text-sm text-slate-500 mb-4">
-              {getBreadcrumbs().map((crumb, idx) => (
-                <React.Fragment key={idx}>
-                  <button 
-                    onClick={() => onTabChange(crumb.tab)}
-                    className={`hover:text-moodle-blue hover:underline ${idx === getBreadcrumbs().length - 1 ? 'text-slate-800 font-medium' : ''}`}
-                  >
-                    {crumb.label}
-                  </button>
-                  {idx < getBreadcrumbs().length - 1 && <ChevronRight size={14} />}
-                </React.Fragment>
-              ))}
-            </nav>
-            
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <h1 className="text-3xl font-bold text-slate-900">
-                {getBreadcrumbs()[getBreadcrumbs().length - 1].label}
-              </h1>
-              
-              <div className="flex items-center space-x-3">
-                <button className="px-4 py-2 border border-slate-300 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
-                  Edit mode
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Dynamic Page Content */}
-          <div className="flex-1 overflow-y-auto p-8">
-            <div className="max-w-7xl mx-auto">
+          {noPadding ? (
+            /* Full-bleed mode: used for pages like LearnMode that manage their own layout */
+            <div className="flex-1 overflow-hidden flex flex-col">
               {children}
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Page Header & Breadcrumbs */}
+              <div className="px-8 py-6 border-b border-slate-100 shrink-0 bg-slate-50/50">
+                <nav className="flex items-center space-x-2 text-sm text-slate-500 mb-4">
+                  {getBreadcrumbs().map((crumb, idx) => (
+                    <React.Fragment key={idx}>
+                      <button
+                        onClick={() => onTabChange(crumb.tab)}
+                        className={`hover:text-moodle-blue hover:underline ${idx === getBreadcrumbs().length - 1 ? 'text-slate-800 font-medium' : ''}`}
+                      >
+                        {crumb.label}
+                      </button>
+                      {idx < getBreadcrumbs().length - 1 && <ChevronRight size={14} />}
+                    </React.Fragment>
+                  ))}
+                </nav>
+
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <h1 className="text-3xl font-bold text-slate-900">
+                    {getBreadcrumbs()[getBreadcrumbs().length - 1].label}
+                  </h1>
+
+                  <div className="flex items-center space-x-3">
+                    <button className="px-4 py-2 border border-slate-300 rounded-md text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors">
+                      Edit mode
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Dynamic Page Content */}
+              <div className="flex-1 overflow-y-auto p-8">
+                <div className="max-w-7xl mx-auto">
+                  {children}
+                </div>
+              </div>
+            </>
+          )}
         </main>
       </div>
     </div>

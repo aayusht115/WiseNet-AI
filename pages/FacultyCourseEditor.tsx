@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, FileText, Loader2, Upload, X } from "lucide-react";
+import { AlertCircle, BrainCircuit, CheckCircle2, ChevronDown, ChevronUp, FileText, Globe, Link2, Loader2, MessageCircle, Send, Sparkles, Trash2, Upload, X } from "lucide-react";
 import ParticipantEnrollmentPanel, {
   ParticipantUser,
 } from "../components/ParticipantEnrollmentPanel";
@@ -159,7 +159,25 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
   const [prereadFile, setPrereadFile] = useState<File | null>(null);
   const [prereadUploading, setPrereadUploading] = useState(false);
   const [prereadSuccess, setPrereadSuccess] = useState("");
-  const [courseMaterials, setCourseMaterials] = useState<{ id: number; title: string; section_id: number }[]>([]);
+  const [prereadMode, setPrereadMode] = useState<"pdf" | "link">("pdf");
+  const [prereadUrl, setPrereadUrl] = useState("");
+  const [courseMaterials, setCourseMaterials] = useState<{ id: number; title: string; section_id: number; source_type?: string; source_url?: string }[]>([]);
+
+  // AI quiz generation state
+  interface ProposedQuestion {
+    question: string;
+    options: string[];
+    correctAnswer: number;
+    explanation: string;
+  }
+  const [quizGenMaterialId, setQuizGenMaterialId] = useState<number | null>(null);
+  const [quizGenPrompt, setQuizGenPrompt] = useState("");
+  const [quizGenCount, setQuizGenCount] = useState(5);
+  const [quizGenLoading, setQuizGenLoading] = useState(false);
+  const [quizGenError, setQuizGenError] = useState("");
+  const [proposedQuestions, setProposedQuestions] = useState<ProposedQuestion[]>([]);
+  const [quizSaving, setQuizSaving] = useState(false);
+  const [quizSaveSuccess, setQuizSaveSuccess] = useState("");
 
   const normalizedCredits = normalizeCredits(formData.credits);
   const expectedSessions = sessionsFromCredits(normalizedCredits);
@@ -623,6 +641,68 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
     setNotice(null);
   };
 
+  const openQuizGen = (materialId: number) => {
+    setQuizGenMaterialId(materialId);
+    setQuizGenPrompt("");
+    setQuizGenCount(5);
+    setQuizGenError("");
+    setProposedQuestions([]);
+    setQuizSaveSuccess("");
+  };
+
+  const handleGenerateQuiz = async () => {
+    if (!quizGenMaterialId) return;
+    setQuizGenLoading(true);
+    setQuizGenError("");
+    setProposedQuestions([]);
+    try {
+      const res = await fetch(`/api/materials/${quizGenMaterialId}/quiz/generate-ai`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: quizGenPrompt, count: quizGenCount }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Generation failed");
+      setProposedQuestions(data.questions ?? []);
+    } catch (err: any) {
+      setQuizGenError(err.message || "Failed to generate quiz questions");
+    } finally {
+      setQuizGenLoading(false);
+    }
+  };
+
+  const handleSaveGeneratedQuiz = async () => {
+    if (!quizGenMaterialId || proposedQuestions.length === 0) return;
+    setQuizSaving(true);
+    setQuizGenError("");
+    try {
+      const res = await fetch(`/api/materials/${quizGenMaterialId}/quiz/questions`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questions: proposedQuestions }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Save failed");
+      setQuizSaveSuccess(`${data.count} questions saved successfully!`);
+      setTimeout(() => {
+        setQuizGenMaterialId(null);
+        setQuizSaveSuccess("");
+      }, 2000);
+    } catch (err: any) {
+      setQuizGenError(err.message || "Failed to save questions");
+    } finally {
+      setQuizSaving(false);
+    }
+  };
+
+  const updateProposedQuestion = (idx: number, field: keyof ProposedQuestion, value: any) => {
+    setProposedQuestions((prev) => {
+      const updated = [...prev];
+      updated[idx] = { ...updated[idx], [field]: value };
+      return updated;
+    });
+  };
+
   const handlePrereadUpload = async () => {
     if (!prereadFile || !prereadSectionId || !courseId) return;
     setPrereadUploading(true);
@@ -651,6 +731,42 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
         setPrereadFile(null);
         setPrereadTitle("");
         if (prereadFileInputRef.current) prereadFileInputRef.current.value = "";
+        const refreshed = await fetch(`/api/courses/${courseId}/materials`);
+        if (refreshed.ok) setCourseMaterials(await refreshed.json());
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setPrereadSuccess(`Upload failed: ${err.error || res.statusText}`);
+      }
+    } catch {
+      setPrereadSuccess("Upload failed. Please try again.");
+    } finally {
+      setPrereadUploading(false);
+    }
+  };
+
+  const handlePrereadLinkUpload = async () => {
+    if (!prereadUrl.trim() || !prereadSectionId || !courseId) return;
+    setPrereadUploading(true);
+    setPrereadSuccess("");
+    try {
+      const urlInput = prereadUrl.trim();
+      // Auto-prepend https:// if no protocol given
+      const fullUrl = /^https?:\/\//i.test(urlInput) ? urlInput : `https://${urlInput}`;
+      const res = await fetch(`/api/courses/${courseId}/materials`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          section_id: Number(prereadSectionId),
+          title: prereadTitle || fullUrl,
+          source_type: "link",
+          source_url: fullUrl,
+        }),
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setPrereadSuccess(`"${created.title || prereadTitle || fullUrl}" added successfully!`);
+        setPrereadUrl("");
+        setPrereadTitle("");
         const refreshed = await fetch(`/api/courses/${courseId}/materials`);
         if (refreshed.ok) setCourseMaterials(await refreshed.json());
       } else {
@@ -1122,53 +1238,103 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
               <FileText size={16} className="text-moodle-blue" />
               Pre-read Resources
             </h3>
-            <div className="space-y-3">
-              <div className="flex items-center gap-3 flex-wrap">
-                <input
-                  ref={prereadFileInputRef}
-                  type="file"
-                  accept=".pdf"
-                  onChange={e => setPrereadFile(e.target.files?.[0] ?? null)}
-                  className="hidden"
-                  id="preread-pdf-input"
-                />
-                <label
-                  htmlFor="preread-pdf-input"
-                  className="flex items-center gap-2 px-3 py-2 border border-slate-300 rounded text-sm cursor-pointer hover:bg-slate-50 transition-colors"
-                >
-                  <Upload size={14} className="text-slate-500" />
-                  {prereadFile ? prereadFile.name : "Choose PDF"}
-                </label>
-                {prereadFile && (
-                  <button type="button" onClick={() => { setPrereadFile(null); if (prereadFileInputRef.current) prereadFileInputRef.current.value = ""; }}>
-                    <X size={14} className="text-slate-400 hover:text-red-500" />
-                  </button>
-                )}
-                <input
-                  type="text"
-                  placeholder="Title (optional)"
-                  value={prereadTitle}
-                  onChange={e => setPrereadTitle(e.target.value)}
-                  className="border border-slate-300 rounded px-3 py-2 text-sm focus:ring-1 focus:ring-moodle-blue outline-none w-52"
-                />
-                <select
-                  value={prereadSectionId}
-                  onChange={e => setPrereadSectionId(e.target.value)}
-                  className="border border-slate-300 rounded px-3 py-2 text-sm focus:ring-1 focus:ring-moodle-blue outline-none"
-                >
-                  {courseSections.length === 0 && <option value="">No sections</option>}
-                  {courseSections.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
-                </select>
+            <div className="space-y-4">
+              {/* Mode toggle: PDF vs Article URL */}
+              <div className="flex items-center bg-slate-100 rounded p-1 w-fit gap-1">
                 <button
                   type="button"
-                  disabled={!prereadFile || !prereadSectionId || prereadUploading}
-                  onClick={handlePrereadUpload}
-                  className="px-4 py-2 bg-moodle-blue text-white rounded text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition-all"
+                  onClick={() => { setPrereadMode("pdf"); setPrereadUrl(""); setPrereadSuccess(""); }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded transition-all ${
+                    prereadMode === "pdf" ? "bg-white text-moodle-blue shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  }`}
                 >
-                  {prereadUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-                  {prereadUploading ? "Uploading…" : "Upload"}
+                  <FileText size={12} /> PDF Upload
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setPrereadMode("link"); setPrereadFile(null); setPrereadSuccess(""); if (prereadFileInputRef.current) prereadFileInputRef.current.value = ""; }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded transition-all ${
+                    prereadMode === "link" ? "bg-white text-moodle-blue shadow-sm" : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  <Globe size={12} /> Article URL
                 </button>
               </div>
+
+              {prereadMode === "pdf" ? (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <input
+                    ref={prereadFileInputRef}
+                    type="file"
+                    accept=".pdf"
+                    onChange={e => { setPrereadFile(e.target.files?.[0] ?? null); setPrereadSuccess(""); }}
+                    className="hidden"
+                    id="preread-pdf-input"
+                  />
+                  <label
+                    htmlFor="preread-pdf-input"
+                    className="flex items-center gap-2 px-3 py-2 border border-slate-300 rounded text-sm cursor-pointer hover:bg-slate-50 transition-colors"
+                  >
+                    <Upload size={14} className="text-slate-500" />
+                    {prereadFile ? prereadFile.name : "Choose PDF"}
+                  </label>
+                  {prereadFile && (
+                    <button type="button" onClick={() => { setPrereadFile(null); setPrereadSuccess(""); if (prereadFileInputRef.current) prereadFileInputRef.current.value = ""; }}>
+                      <X size={14} className="text-slate-400 hover:text-red-500" />
+                    </button>
+                  )}
+                  <input
+                    type="text"
+                    placeholder="Title (optional)"
+                    value={prereadTitle}
+                    onChange={e => setPrereadTitle(e.target.value)}
+                    className="border border-slate-300 rounded px-3 py-2 text-sm focus:ring-1 focus:ring-moodle-blue outline-none w-52"
+                  />
+                  <select
+                    value={prereadSectionId}
+                    onChange={e => setPrereadSectionId(e.target.value)}
+                    className="border border-slate-300 rounded px-3 py-2 text-sm focus:ring-1 focus:ring-moodle-blue outline-none"
+                  >
+                    {courseSections.length === 0 && <option value="">No sections</option>}
+                    {courseSections.map(s => <option key={s.id} value={s.id}>{s.title}</option>)}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!prereadFile || prereadUploading}
+                    onClick={handlePrereadUpload}
+                    className="px-4 py-2 bg-moodle-blue text-white rounded text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition-all"
+                  >
+                    {prereadUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                    {prereadUploading ? "Uploading…" : "Upload"}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-100 rounded text-xs text-blue-700">
+                    <Link2 size={13} className="shrink-0" />
+                    Paste a public article or news URL. The text will be automatically extracted, summarised, and used for quiz generation.
+                  </div>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <input
+                      type="text"
+                      placeholder="https://example.com/article  (required)"
+                      value={prereadUrl}
+                      onChange={e => setPrereadUrl(e.target.value)}
+                      className="border border-slate-300 rounded px-3 py-2 text-sm focus:ring-1 focus:ring-moodle-blue outline-none flex-1 min-w-[300px]"
+                    />
+                    <button
+                      type="button"
+                      disabled={!prereadUrl.trim() || prereadUploading}
+                      onClick={handlePrereadLinkUpload}
+                      className="px-4 py-2 bg-moodle-blue text-white rounded text-sm font-bold hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 transition-all"
+                    >
+                      {prereadUploading ? <Loader2 size={14} className="animate-spin" /> : <Globe size={14} />}
+                      {prereadUploading ? "Fetching…" : "Add Article"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {prereadSuccess && (
                 <p className={`text-sm flex items-center gap-2 ${prereadSuccess.startsWith("Upload failed") ? "text-red-600" : "text-emerald-600"}`}>
                   <CheckCircle2 size={14} /> {prereadSuccess}
@@ -1179,13 +1345,215 @@ const FacultyCourseEditor: React.FC<FacultyCourseEditorProps> = ({
                   <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Uploaded materials</p>
                   {courseMaterials.map(m => (
                     <div key={m.id} className="flex items-center gap-3 p-3 bg-slate-50 border border-slate-200 rounded text-sm">
-                      <FileText size={14} className="text-moodle-blue shrink-0" />
-                      <span className="text-slate-700 font-medium">{m.title}</span>
-                      <span className="text-xs text-slate-400 ml-auto">
+                      {m.source_type === "link"
+                        ? <Globe size={14} className="text-emerald-600 shrink-0" />
+                        : <FileText size={14} className="text-moodle-blue shrink-0" />}
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-slate-700 font-medium truncate">{m.title}</span>
+                        {m.source_type === "link" && m.source_url && (
+                          <a
+                            href={m.source_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[11px] text-slate-400 hover:text-moodle-blue truncate"
+                          >
+                            {m.source_url}
+                          </a>
+                        )}
+                      </div>
+                      <span className="text-xs text-slate-400 shrink-0">
                         {courseSections.find(s => s.id === m.section_id)?.title ?? ""}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => openQuizGen(m.id)}
+                        className="ml-auto shrink-0 flex items-center gap-1.5 px-3 py-1 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded text-xs font-bold hover:bg-indigo-100 transition-all"
+                      >
+                        <BrainCircuit size={12} />
+                        Generate Quiz
+                      </button>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* ── AI Quiz Generation Modal ── */}
+              {quizGenMaterialId !== null && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+
+                    {/* Modal header */}
+                    <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-blue-50 shrink-0">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center">
+                          <BrainCircuit size={18} className="text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-bold text-slate-800">AI Quiz Generator</h3>
+                          <p className="text-xs text-slate-500">
+                            {courseMaterials.find(m => m.id === quizGenMaterialId)?.title}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setQuizGenMaterialId(null)}
+                        className="p-2 hover:bg-slate-200 rounded-full text-slate-400"
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-6 space-y-5">
+
+                      {/* Prompt + settings */}
+                      {proposedQuestions.length === 0 && (
+                        <>
+                          <div>
+                            <label className="text-xs font-bold text-slate-600 uppercase tracking-wide block mb-1.5">
+                              Instruction to AI (optional)
+                            </label>
+                            <textarea
+                              value={quizGenPrompt}
+                              onChange={e => setQuizGenPrompt(e.target.value)}
+                              rows={3}
+                              placeholder={`e.g. "Focus on CPOE implementation challenges" or "Include at least 2 ethical dilemma questions"`}
+                              className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            />
+                          </div>
+                          <div className="flex items-center gap-4">
+                            <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">
+                              Number of questions
+                            </label>
+                            <div className="flex items-center gap-2">
+                              {[3, 5, 7, 10].map(n => (
+                                <button
+                                  key={n}
+                                  type="button"
+                                  onClick={() => setQuizGenCount(n)}
+                                  className={`w-9 h-9 rounded-lg text-sm font-bold border transition-all ${quizGenCount === n ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:border-indigo-400'}`}
+                                >
+                                  {n}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Error */}
+                      {quizGenError && (
+                        <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                          <AlertCircle size={15} />
+                          {quizGenError}
+                        </div>
+                      )}
+
+                      {/* Proposed questions (editable) */}
+                      {proposedQuestions.length > 0 && (
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">
+                              {proposedQuestions.length} questions generated — review & edit before saving
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => setProposedQuestions([])}
+                              className="text-xs text-slate-400 hover:text-slate-600 underline"
+                            >
+                              Regenerate
+                            </button>
+                          </div>
+                          {proposedQuestions.map((q, qi) => (
+                            <div key={qi} className="border border-slate-200 rounded-xl p-4 space-y-3 bg-slate-50">
+                              <div className="flex items-start gap-2">
+                                <span className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                                  {qi + 1}
+                                </span>
+                                <textarea
+                                  value={q.question}
+                                  onChange={e => updateProposedQuestion(qi, 'question', e.target.value)}
+                                  rows={2}
+                                  className="flex-1 text-sm font-medium text-slate-800 bg-white border border-slate-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                                />
+                              </div>
+                              <div className="space-y-1.5 pl-8">
+                                {q.options.map((opt, oi) => (
+                                  <div key={oi} className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => updateProposedQuestion(qi, 'correctAnswer', oi)}
+                                      className={`w-5 h-5 rounded-full border-2 shrink-0 transition-all ${q.correctAnswer === oi ? 'border-emerald-500 bg-emerald-500' : 'border-slate-300 hover:border-emerald-400'}`}
+                                      title="Mark as correct"
+                                    />
+                                    <input
+                                      type="text"
+                                      value={opt}
+                                      onChange={e => {
+                                        const newOpts = [...q.options];
+                                        newOpts[oi] = e.target.value;
+                                        updateProposedQuestion(qi, 'options', newOpts);
+                                      }}
+                                      className={`flex-1 text-sm px-3 py-1.5 rounded-lg border focus:outline-none focus:ring-1 focus:ring-indigo-300 ${q.correctAnswer === oi ? 'bg-emerald-50 border-emerald-300 text-emerald-800' : 'bg-white border-slate-200 text-slate-700'}`}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="pl-8">
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1">Explanation</p>
+                                <input
+                                  type="text"
+                                  value={q.explanation}
+                                  onChange={e => updateProposedQuestion(qi, 'explanation', e.target.value)}
+                                  className="w-full text-xs text-slate-600 italic bg-white border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-300"
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Success */}
+                      {quizSaveSuccess && (
+                        <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-700 text-sm">
+                          <CheckCircle2 size={15} />
+                          {quizSaveSuccess}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Modal footer */}
+                    <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex gap-3 shrink-0">
+                      {proposedQuestions.length === 0 ? (
+                        <button
+                          type="button"
+                          onClick={handleGenerateQuiz}
+                          disabled={quizGenLoading}
+                          className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-60 transition-all"
+                        >
+                          {quizGenLoading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                          {quizGenLoading ? 'Generating with Qwen AI…' : `Generate ${quizGenCount} Questions`}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleSaveGeneratedQuiz}
+                          disabled={quizSaving}
+                          className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-60 transition-all"
+                        >
+                          {quizSaving ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+                          {quizSaving ? 'Saving…' : `Save ${proposedQuestions.length} Questions for Students`}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setQuizGenMaterialId(null)}
+                        className="px-4 py-2.5 border border-slate-300 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-100 transition-all"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

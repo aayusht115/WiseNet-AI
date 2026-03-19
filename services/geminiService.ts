@@ -44,12 +44,12 @@ export const geminiService = {
     return "The AI assistant isn't available right now. You can still review the insights on the right panel.";
   },
 
-  async summarizeContent(title: string, content: string, detailLevel: 'Brief' | 'Standard' | 'Detailed' = 'Standard'): Promise<SummaryResult> {
+  async summarizeContent(title: string, content: string, detailLevel: 'Brief' | 'Standard' | 'Detailed' = 'Standard', focusPrompt: string = ''): Promise<SummaryResult> {
     try {
       const response = await fetch('/api/ai/summarize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, content, detailLevel }),
+        body: JSON.stringify({ title, content, detailLevel, focusPrompt }),
       });
       if (!response.ok) throw new Error('Summarization failed');
       return await response.json();

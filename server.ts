@@ -477,8 +477,28 @@ function shuffle<T>(arr: T[]): T[] {
   return copy;
 }
 
-function splitSentences(text: string) {
+/**
+ * Clean common OCR/PDF-extraction artefacts before text is processed:
+ *  - Page numbers bled into the start of a word  ("1Just" → "Just", "217 An" → "An")
+ *  - Footnote superscripts stuck to a capital    ("text4 The next" → "text. The next")
+ *  - Isolated single/double-letter tokens from bad hyphenation ("zzly afternoo" style)
+ *  - Repeated underscores / dashes used as dividers
+ */
+function cleanOCRText(text: string): string {
   return text
+    // page-number bleeding: digit(s) immediately followed by a capital letter at a word boundary
+    .replace(/(?<!\w)\d{1,3}(?=[A-Z][a-z])/g, "")
+    // footnote superscripts between a word and a space/capital
+    .replace(/(?<=[a-z])\d{1,2}(?=\s+[A-Z])/g, ".")
+    // lines that are mostly underscores or dashes (dividers / redactions)
+    .replace(/^[_\-\s]{4,}$/gm, "")
+    // collapse leftover double-spaces
+    .replace(/ {2,}/g, " ")
+    .trim();
+}
+
+function splitSentences(text: string) {
+  return cleanOCRText(text)
     .replace(/\s+/g, " ")
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
@@ -531,6 +551,12 @@ function isBoilerplate(sentence: string): boolean {
   // Mostly non-alpha (e.g. "9-914-044  JUNE 17, 2014")
   const alphaRatio = (trimmed.match(/[a-zA-Z]/g) || []).length / trimmed.length;
   if (alphaRatio < 0.45 && trimmed.length < 100) return true;
+  // Garbled OCR: high ratio of 1-2 char tokens (e.g. "3I e other zzly afternoo ntation")
+  const words = trimmed.split(/\s+/);
+  if (words.length >= 5) {
+    const shortRatio = words.filter((w) => /^[a-zA-Z0-9]{1,2}$/.test(w)).length / words.length;
+    if (shortRatio > 0.40) return true;
+  }
   return BOILERPLATE_PATTERNS.some((p) => p.test(trimmed));
 }
 
@@ -740,11 +766,95 @@ function makeQuizFromContent(content: string): QuizQuestionPayload[] {
 }
 
 /**
+ * Shuffle the options of a quiz question, keeping correctAnswer pointing at the same option.
+ */
+function shuffleQuizOptions(q: QuizQuestionPayload): QuizQuestionPayload {
+  const correctOption = q.options[q.correctAnswer];
+  const shuffled = shuffle([...q.options]);
+  return { ...q, options: shuffled, correctAnswer: shuffled.indexOf(correctOption) };
+}
+
+/**
+ * Use Qwen to generate quiz questions from reading content.
+ * Returns an array of QuizQuestionPayload (already shuffled) or throws on failure.
+ */
+async function generateQuizWithQwen(
+  title: string,
+  content: string,
+  count: number
+): Promise<QuizQuestionPayload[]> {
+  const token = process.env.HF_TOKEN;
+  if (!token) throw new Error("HF_TOKEN not configured");
+
+  const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
+  const hfUrl = "https://router.huggingface.co/v1/chat/completions";
+  const docContext = sampleForSummarization(cleanOCRText(content), 4000);
+
+  const systemMsg = `You are a quiz writer creating multiple-choice questions for an academic reading titled "${title}".
+
+READING MATERIAL:
+"""
+${docContext}
+"""
+
+Rules:
+- Base every question STRICTLY on specific facts, names, numbers, or concepts from the reading.
+- Do NOT use generic academic filler. Each question must be uniquely answerable from this specific text.
+- correctAnswer is the 0-indexed position of the correct option (0, 1, 2, or 3).
+- All 4 options must be plausible but only one correct.
+- Questions must test understanding, not just recall.
+- Return ONLY a valid JSON array — no markdown, no preamble.`;
+
+  const userMsg = `Generate exactly ${count} multiple-choice questions that test conceptual understanding of the key ideas in this reading.
+
+Return ONLY a JSON array of exactly ${count} objects:
+{"question":"...","options":["A text","B text","C text","D text"],"correctAnswer":0,"explanation":"..."}`;
+
+  const hfRes = await fetch(hfUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemMsg },
+        { role: "user", content: userMsg },
+      ],
+      max_tokens: 1800,
+      stream: false,
+    }),
+  });
+
+  if (!hfRes.ok) {
+    const e = await hfRes.text();
+    throw new Error(`HF ${hfRes.status}: ${e.slice(0, 200)}`);
+  }
+
+  const data = await hfRes.json() as any;
+  const raw: string = data?.choices?.[0]?.message?.content ?? "";
+  const match = raw.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error("Model did not return a JSON array");
+
+  const parsed = JSON.parse(match[0]) as any[];
+  return parsed.slice(0, count).map((q: any, i: number) =>
+    shuffleQuizOptions({
+      question: String(q.question || `Question ${i + 1}`),
+      options: Array.isArray(q.options) && q.options.length === 4
+        ? q.options.map(String)
+        : ["Option A", "Option B", "Option C", "Option D"],
+      correctAnswer: typeof q.correctAnswer === "number" ? q.correctAnswer : 0,
+      explanation: String(q.explanation || "See the reading material for details."),
+    })
+  );
+}
+
+/**
  * Strip obvious front-matter / boilerplate lines from the beginning of extracted PDF text
  * so the AI receives the substantive content first.
  */
 function stripLeadingBoilerplate(text: string): string {
-  const lines = text.split(/\r?\n/);
+  // First clean OCR artefacts so boilerplate detection works on clean text
+  const cleaned = cleanOCRText(text);
+  const lines = cleaned.split(/\r?\n/);
   let start = 0;
   for (let i = 0; i < Math.min(lines.length, 40); i++) {
     const line = lines[i].trim();
@@ -755,8 +865,8 @@ function stripLeadingBoilerplate(text: string): string {
     }
   }
   const stripped = lines.slice(start).join("\n").trim();
-  // If stripping removed too much, fall back to full text
-  return stripped.length > 200 ? stripped : text;
+  // If stripping removed too much, fall back to full cleaned text
+  return stripped.length > 200 ? stripped : cleaned;
 }
 
 /**
@@ -792,20 +902,28 @@ function splitIntoChunks(text: string, maxChars = 3000): string[] {
 }
 
 /**
- * Single call to the BART (or configured HF model) summarization endpoint.
+ * Call a Qwen (or other text-generation) model via the HuggingFace Inference API.
+ * Wraps the content in an instruct-style prompt and returns the generated summary text.
  */
-async function callBartAPI(
+async function callQwenAPI(
   url: string,
   token: string,
   text: string,
-  params: { max_length: number; min_length: number }
+  maxTokens: number
 ): Promise<string> {
+  const prompt =
+    `You are an expert academic summariser. Read the following reading material and write a clear, concise summary in 3-5 sentences covering the main ideas.\n\nReading material:\n${text}\n\nSummary:`;
+
   const res = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      inputs: text,
-      parameters: { ...params, do_sample: false, truncation: true },
+      inputs: prompt,
+      parameters: {
+        max_new_tokens: maxTokens,
+        do_sample: false,
+        return_full_text: false,
+      },
       options: { wait_for_model: true },
     }),
   });
@@ -814,57 +932,176 @@ async function callBartAPI(
     throw new Error(`HuggingFace API error ${res.status}: ${err.slice(0, 300)}`);
   }
   const data = (await res.json()) as any;
-  const txt = Array.isArray(data) ? data[0]?.summary_text : data?.summary_text;
-  if (!txt) throw new Error("No summary returned by HuggingFace model");
+  const txt = Array.isArray(data) ? data[0]?.generated_text : data?.generated_text;
+  if (!txt) throw new Error("No summary returned by Qwen model");
   return String(txt).trim();
 }
 
 /**
- * Primary summariser — uses facebook/bart-large-cnn via the HuggingFace
+ * Fetches a URL and extracts readable plain text from the HTML.
+ * Used to auto-populate article content for link-type materials.
+ */
+async function scrapeArticleText(url: string): Promise<string> {
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (compatible; WiseNetBot/1.0; +https://wisenet.app)",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.5",
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok)
+    throw new Error(
+      `Could not fetch URL (HTTP ${res.status}). Make sure the link is publicly accessible.`
+    );
+
+  const html = await res.text();
+
+  // Strip blocks that never contain article text
+  let text = html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, " ")
+    .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, " ")
+    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, " ")
+    .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, " ")
+    .replace(/<noscript[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+    // Block elements → newlines so paragraphs are preserved
+    .replace(/<\/?(p|div|article|section|h[1-6]|li|br|tr|blockquote)[^>]*>/gi, "\n")
+    // Strip all remaining HTML tags
+    .replace(/<[^>]+>/g, " ")
+    // Decode common HTML entities
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&[a-z]{2,8};/gi, " ")
+    // Normalise whitespace
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // Cap at 60 000 chars to avoid overwhelming the context window
+  text = text.slice(0, 60000);
+
+  if (text.length < 200)
+    throw new Error(
+      "Could not extract readable text from this URL. The page may require JavaScript or block automated access. Try pasting the article text manually."
+    );
+
+  return text;
+}
+
+/**
+ * Primary summariser — uses Qwen/Qwen2.5-7B-Instruct via the HuggingFace
  * Inference API (free tier, just needs a read token from huggingface.co).
  *
  * Set HUGGINGFACE_API_KEY in your .env file.
- * Optionally override the model with HF_MODEL (must be a summarization pipeline).
+ * Optionally override the model with HF_MODEL.
  */
-async function summarizeWithAI(title: string, content: string, detailLevel: "Brief" | "Standard" | "Detailed" = "Standard"): Promise<SummaryPayload> {
-  const token = process.env.HUGGINGFACE_API_KEY;
-  if (!token) throw new Error("HUGGINGFACE_API_KEY not configured");
+async function summarizeWithAI(
+  title: string,
+  content: string,
+  detailLevel: "Brief" | "Standard" | "Detailed" = "Standard",
+  focusPrompt: string = ""
+): Promise<SummaryPayload> {
+  const token = process.env.HF_TOKEN;
+  if (!token) throw new Error("HF_TOKEN not configured");
 
-  const model = process.env.HF_MODEL || "facebook/bart-large-cnn";
-  const url = `https://api-inference.huggingface.co/models/${model}`;
+  const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
+  const hfUrl = "https://router.huggingface.co/v1/chat/completions";
 
   const cleaned = stripLeadingBoilerplate(content);
-
-  // Smart-sample: prioritise beginning (intro/abstract) and end (conclusion)
-  // so the single BART call gets the most informative portion.
-  const sampleSize =
-    detailLevel === "Brief" ? 2800 : detailLevel === "Detailed" ? 4500 : 3600;
+  const sampleSize = detailLevel === "Brief" ? 2800 : detailLevel === "Detailed" ? 5000 : 3800;
   const inputText = sampleForSummarization(cleaned, sampleSize);
+  const maxTokens = detailLevel === "Brief" ? 350 : detailLevel === "Detailed" ? 800 : 550;
+  const numPoints = detailLevel === "Brief" ? 3 : detailLevel === "Detailed" ? 7 : 5;
 
-  // Detail-level controls the summary length target.
-  const summaryParams =
-    detailLevel === "Brief"
-      ? { max_length: 180, min_length: 60 }
-      : detailLevel === "Detailed"
-      ? { max_length: 520, min_length: 180 }
-      : { max_length: 350, min_length: 100 };
+  const focusLine = focusPrompt.trim()
+    ? `\nSPECIAL FOCUS: The user specifically wants to understand: "${focusPrompt}". Prioritise this in both the overview and the takeaways.`
+    : "";
 
-  const summaryText = await callBartAPI(url, token, inputText, summaryParams);
+  const systemMsg = `You are an expert academic summariser. Produce a clear, structured summary of the reading material.
 
-  // TF-IDF on the full cleaned text → deduped, filtered key takeaways.
+RULES:
+- Include SPECIFIC data: quote exact numbers, percentages, dates, names, and statistics from the text. Never use vague phrases like "various factors" or "significant impact" when specific data is available.
+- Do NOT invent information not present in the text.
+- Write numbered list items consecutively WITHOUT blank lines between them.${focusLine}
+
+FORMAT YOUR RESPONSE EXACTLY AS FOLLOWS (no extra text before or after):
+
+OVERVIEW: [A flowing 2-4 sentence paragraph covering the main argument. Include specific data.]
+
+TAKEAWAYS:
+1. [Label]: [1-2 sentences with specific data from the text]
+2. [Label]: [1-2 sentences with specific data from the text]
+(continue for all ${numPoints} takeaways)`;
+
+  const userMsg = `Summarise the reading titled "${title}":\n\n${inputText}`;
+
+  const hfRes = await fetch(hfUrl, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemMsg },
+        { role: "user", content: userMsg },
+      ],
+      max_tokens: maxTokens,
+      stream: false,
+    }),
+  });
+
+  if (!hfRes.ok) {
+    const e = await hfRes.text();
+    throw new Error(`HF ${hfRes.status}: ${e.slice(0, 300)}`);
+  }
+
+  const data = await hfRes.json() as any;
+  const raw: string = data?.choices?.[0]?.message?.content ?? "";
+
+  // Parse OVERVIEW
+  const overviewMatch = raw.match(/OVERVIEW:\s*([\s\S]+?)(?=\n\s*TAKEAWAYS:|\n\s*1\.|$)/i);
+  const summaryText = overviewMatch ? overviewMatch[1].trim() : raw.slice(0, 400).trim();
+
+  // Parse TAKEAWAYS — split on numbered lines like "1." "2." etc.
+  const takeawaysBlock = raw.match(/TAKEAWAYS:\s*([\s\S]+)/i)?.[1] ?? "";
+  const rawItems = takeawaysBlock.split(/\n(?=\d+\.)/).map((s) => s.trim()).filter(Boolean);
+  let keyTakeaways = rawItems
+    .map((item) => item.replace(/^\d+\.\s*/, "").trim())
+    .filter((t) => t.length > 10)
+    .slice(0, numPoints);
+
+  // Extract label from "Label: body" format
+  const keyTakeawayLabels = keyTakeaways.map((t, i) => {
+    const colonIdx = t.indexOf(":");
+    if (colonIdx > 0 && colonIdx < 60) return t.slice(0, colonIdx).replace(/\*\*/g, "").trim();
+    return `Key Insight ${i + 1}`;
+  });
+
+  // Strip the "Label: " prefix from body so cards don't repeat it
+  keyTakeaways = keyTakeaways.map((t) => {
+    const colonIdx = t.indexOf(":");
+    if (colonIdx > 0 && colonIdx < 60) return t.slice(colonIdx + 1).trim();
+    return t;
+  });
+
+  // Fall back to TF-IDF if model returned no usable takeaways
+  if (keyTakeaways.length < 2) {
+    const tfidf = buildTFIDFSummaryPayload(title, cleaned, detailLevel);
+    keyTakeaways = tfidf.keyTakeaways;
+    keyTakeaways.forEach((_, i) => { keyTakeawayLabels[i] = `Key Insight ${i + 1}`; });
+  }
+
   const tfidf = buildTFIDFSummaryPayload(title, cleaned, detailLevel);
-
-  const takeaways = tfidf.keyTakeaways.length >= 2
-    ? tfidf.keyTakeaways
-    : [summaryText]; // fallback if TF-IDF yields nothing useful
-
-  // Generic labels for the takeaway cards in the UI.
-  const keyTakeawayLabels = takeaways.map((_, i) => `Key Insight ${i + 1}`);
-
   return {
     title,
     summary: summaryText,
-    keyTakeaways: takeaways,
+    keyTakeaways,
     keyTakeawayLabels,
     furtherReading: tfidf.furtherReading.slice(0, detailLevel === "Detailed" ? 5 : 3),
   };
@@ -1400,13 +1637,14 @@ async function startServer() {
       const title = String(req.body?.title || "Untitled Reading");
       const content = String(req.body?.content || "");
       const rawLevel = String(req.body?.detailLevel || "Standard");
+      const focusPrompt = String(req.body?.focusPrompt || "").trim();
       const detailLevel: "Brief" | "Standard" | "Detailed" = ["Brief", "Standard", "Detailed"].includes(rawLevel)
         ? (rawLevel as "Brief" | "Standard" | "Detailed")
         : "Standard";
       if (!content.trim()) return res.status(400).json({ error: "Content is required" });
       let result: SummaryPayload;
       try {
-        result = await summarizeWithAI(title, content, detailLevel);
+        result = await summarizeWithAI(title, content, detailLevel, focusPrompt);
       } catch (error) {
         console.error("AI summarize failed, falling back to TF-IDF", error);
         result = buildTFIDFSummaryPayload(title, content, detailLevel);
@@ -3111,10 +3349,22 @@ async function startServer() {
         }
       }
     }
+    // For link materials with no manually pasted content, auto-scrape the URL
+    if (!materialContent && source_type === "link" && source_url) {
+      try {
+        materialContent = await scrapeArticleText(String(source_url));
+        materialContent = stripUnsupportedTextChars(materialContent).trim();
+      } catch (scrapeErr: any) {
+        return res.status(400).json({
+          error: scrapeErr.message || "Failed to fetch the article. Try pasting the text manually.",
+        });
+      }
+    }
+
     if (!materialContent) {
       if (source_type === "link") {
         return res.status(400).json({
-          error: "For web links, paste the article content so summary and quiz can be generated.",
+          error: "Could not extract text from this URL. Please paste the article content manually.",
         });
       }
       return res.status(400).json({
@@ -3130,8 +3380,15 @@ async function startServer() {
       console.error("Gemini summarize failed during material upload, falling back to TF-IDF", error);
       summary = buildFallbackSummaryPayload(String(title), materialContent);
     }
-    const quizSource = `${summary.summary || ""}. ${(summary.keyTakeaways || []).join(". ")}`.trim();
-    const quiz = makeQuizFromContent(quizSource || materialContent);
+    // Generate quiz with Qwen for specific, content-grounded questions; fall back to TF-IDF
+    let quiz: QuizQuestionPayload[];
+    try {
+      quiz = await generateQuizWithQwen(String(title), materialContent, 5);
+    } catch (qwenErr) {
+      console.warn("Qwen quiz generation failed at upload, using TF-IDF fallback:", qwenErr);
+      const quizSource = `${summary.summary || ""}. ${(summary.keyTakeaways || []).join(". ")}`.trim();
+      quiz = makeQuizFromContent(quizSource || materialContent).map(shuffleQuizOptions);
+    }
     const assigned = Boolean(is_assigned);
     const dueDateOnly = normalizeDateOnly(due_at);
     const dueAt = dueDateOnly ? `${dueDateOnly}T23:59:59Z` : null;
@@ -3216,6 +3473,22 @@ async function startServer() {
     res.json({ success: true, material_id: material?.id });
   });
 
+  // ── Notification helper ────────────────────────────────────────────────
+  async function createNotification(
+    userId: number,
+    type: string,
+    title: string,
+    body: string,
+    courseId?: number | null,
+    materialId?: number | null
+  ) {
+    await execute(
+      `INSERT INTO notifications (user_id, type, title, body, course_id, material_id)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [userId, type, title, body, courseId ?? null, materialId ?? null]
+    );
+  }
+
   app.patch("/api/materials/:id/assign", authenticate, async (req: any, res) => {
     if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
     const materialId = Number(req.params.id);
@@ -3238,6 +3511,37 @@ async function startServer() {
       `,
       [assigned, dueAt, materialId]
     );
+
+    // Fire notifications to all enrolled students when a pre-read is assigned
+    if (assigned) {
+      try {
+        const matInfo = await queryOne<{ title: string; course_id: number }>(
+          "SELECT title, course_id FROM course_materials WHERE id = $1",
+          [materialId]
+        );
+        const courseInfo = await queryOne<{ name: string; code: string }>(
+          "SELECT name, code FROM courses WHERE id = $1",
+          [matInfo?.course_id]
+        );
+        const enrolledStudents = await query<{ user_id: number }>(
+          "SELECT user_id FROM enrollments WHERE course_id = $1",
+          [matInfo?.course_id]
+        );
+        for (const { user_id } of enrolledStudents) {
+          await createNotification(
+            user_id,
+            "pre_read_assigned",
+            `New pre-read: ${matInfo?.title}`,
+            `A new pre-read has been assigned in ${courseInfo?.code} – ${courseInfo?.name}.`,
+            matInfo?.course_id,
+            materialId
+          );
+        }
+      } catch (notifErr) {
+        console.warn("Failed to create assignment notifications:", notifErr);
+      }
+    }
+
     res.json({ success: true });
   });
 
@@ -3257,8 +3561,14 @@ async function startServer() {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const quizSource = `${material.summary || ""}. ${(safeJson(material.key_takeaways, []) || []).join(". ")}`.trim();
-    const quiz = makeQuizFromContent(quizSource || String(material.content || ""));
+    let quiz: QuizQuestionPayload[];
+    try {
+      quiz = await generateQuizWithQwen(String(material.title), String(material.content || ""), 5);
+    } catch (qwenErr) {
+      console.warn("Qwen quiz regeneration failed, using TF-IDF fallback:", qwenErr);
+      const quizSource = `${material.summary || ""}. ${(safeJson(material.key_takeaways, []) || []).join(". ")}`.trim();
+      quiz = makeQuizFromContent(quizSource || String(material.content || "")).map(shuffleQuizOptions);
+    }
 
     await execute("DELETE FROM material_quiz_questions WHERE material_id = $1", [materialId]);
     for (const [idx, q] of quiz.entries()) {
@@ -3330,6 +3640,23 @@ async function startServer() {
     }
     if (req.user.role !== "faculty" && !material.is_assigned) {
       return res.status(403).json({ error: "Material not assigned yet" });
+    }
+
+    // For students: check if they've already submitted an attempt
+    if (req.user.role === "student") {
+      const existingAttempt = await queryOne<any>(
+        `SELECT score, total_questions FROM material_quiz_attempts
+         WHERE material_id = $1 AND user_id = $2
+         ORDER BY submitted_at DESC LIMIT 1`,
+        [materialId, req.user.id]
+      );
+      if (existingAttempt) {
+        return res.json({
+          completed: true,
+          score: Number(existingAttempt.score),
+          total: Number(existingAttempt.total_questions),
+        });
+      }
     }
 
     const questions = await query<any>(
@@ -3469,8 +3796,391 @@ async function startServer() {
       [materialId, req.user.id, score, questions.length]
     );
 
+    // Notify the student of their quiz score
+    try {
+      const matTitle = await queryOne<{ title: string; course_id: number }>(
+        "SELECT title, course_id FROM course_materials WHERE id = $1",
+        [materialId]
+      );
+      if (matTitle) {
+        await createNotification(
+          req.user.id,
+          "quiz_result",
+          `Quiz result: ${matTitle.title}`,
+          `You scored ${score}/${questions.length} on the quiz for "${matTitle.title}".`,
+          matTitle.course_id,
+          materialId
+        );
+      }
+    } catch (notifErr) {
+      console.warn("Failed to create quiz result notification:", notifErr);
+    }
+
     res.json({ score, total: questions.length });
   });
+
+  /**
+   * GET /api/materials/:id/pdf-file
+   * Returns the raw PDF binary so the browser can render it in an <iframe>.
+   * Students must be enrolled; faculty must own the course.
+   */
+  app.get("/api/materials/:id/pdf-file", authenticate, async (req: any, res) => {
+    const materialId = Number(req.params.id);
+    const material = await queryOne<any>(
+      "SELECT source_file_base64, source_type, course_id FROM course_materials WHERE id = $1",
+      [materialId]
+    );
+    if (!material) return res.status(404).json({ error: "Not found" });
+    if (material.source_type !== "pdf") return res.status(400).json({ error: "Not a PDF material" });
+
+    if (req.user.role === "student") {
+      const enrolled = await queryOne(
+        "SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2",
+        [req.user.id, material.course_id]
+      );
+      if (!enrolled) return res.status(403).json({ error: "Not enrolled" });
+    } else {
+      if (!(await canManageCourse(req.user, material.course_id))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+
+    if (!material.source_file_base64) return res.status(404).json({ error: "No PDF stored" });
+    const pdfBuffer = Buffer.from(material.source_file_base64, "base64");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "inline");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.send(pdfBuffer);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MATERIAL CHAT  (student: chat with PDF  |  faculty: generate quiz via AI)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** GET /api/materials/:id/chat/history — last 50 messages for this user */
+  app.get("/api/materials/:id/chat/history", authenticate, async (req: any, res) => {
+    const materialId = Number(req.params.id);
+    const rows = await query<any>(
+      `SELECT id, role, content, created_at
+       FROM material_chat_messages
+       WHERE material_id = $1 AND user_id = $2
+       ORDER BY created_at ASC
+       LIMIT 50`,
+      [materialId, req.user.id]
+    );
+    res.json(rows);
+  });
+
+  /**
+   * POST /api/materials/:id/chat
+   * Body: { message: string }
+   * Streams the assistant response via SSE using HF router OpenAI-compatible API.
+   */
+  app.post("/api/materials/:id/chat", authenticate, async (req: any, res) => {
+    const materialId = Number(req.params.id);
+    const userMessage = String(req.body?.message || "").trim();
+    if (!userMessage) return res.status(400).json({ error: "message is required" });
+
+    const material = await queryOne<any>(
+      "SELECT content, title, course_id FROM course_materials WHERE id = $1",
+      [materialId]
+    );
+    if (!material) return res.status(404).json({ error: "Material not found" });
+
+    if (req.user.role === "student") {
+      const enrolled = await queryOne(
+        "SELECT 1 FROM enrollments WHERE user_id = $1 AND course_id = $2",
+        [req.user.id, material.course_id]
+      );
+      if (!enrolled) return res.status(403).json({ error: "Not enrolled" });
+    } else {
+      if (!(await canManageCourse(req.user, material.course_id))) {
+        return res.status(403).json({ error: "Forbidden" });
+      }
+    }
+
+    // Save user message
+    await execute(
+      "INSERT INTO material_chat_messages (material_id, user_id, role, content) VALUES ($1, $2, 'user', $3)",
+      [materialId, req.user.id, userMessage]
+    );
+
+    // Load conversation history (excluding the message just inserted)
+    const history = await query<any>(
+      `SELECT role, content FROM material_chat_messages
+       WHERE material_id = $1 AND user_id = $2
+       ORDER BY created_at ASC LIMIT 20`,
+      [materialId, req.user.id]
+    );
+
+    // Use a larger context window so exhibit references near the end of the document are visible
+    const docContext = sampleForSummarization(cleanOCRText(material.content || ""), 5500);
+
+    const systemContent = `You are an expert academic tutor helping a student understand a reading material titled "${material.title}".
+
+READING MATERIAL:
+"""
+${docContext}
+"""
+
+INSTRUCTIONS — follow these exactly:
+1. Answer ONLY using the reading material above. Never invent or assume information not present in the text.
+2. Use SPECIFIC data — quote exact numbers, percentages, figures, names, dates, and statistics from the material whenever available.
+3. NEVER use hedging language such as "likely", "probably", "might be", "it seems", or "possibly" — state what the text says directly.
+4. EXHIBITS, TABLES, CHARTS, AND FIGURES — handle like this:
+   a. Search the full reading text carefully for any mention of the exhibit/figure/table number (e.g. "Exhibit 7", "Figure 3", "Table 2").
+   b. Report EXACTLY what the surrounding text says about it — description, data values, axes, comparisons, footnotes.
+   c. If the exhibit is discussed across multiple paragraphs, synthesise all relevant mentions.
+   d. If the document mentions the exhibit only briefly (e.g. "see Exhibit 7"), state the context in which it is referenced and what the nearby text discusses.
+   e. ONLY say the material doesn't cover it if the exhibit number/name does not appear ANYWHERE in the text.
+5. Format every response with clear markdown:
+   - **Bold** key terms and important figures
+   - Numbered lists (1. 2. 3.) for steps, sequences, or ranked points — write them consecutively WITHOUT blank lines between items
+   - Bullet points (- item) for unordered lists
+   - A blank line between distinct sections
+7. For summarise requests: give exactly 5 key numbered points, each 1-2 sentences, each starting with a bold term.
+8. Be thorough but do not repeat the same point twice.`;
+
+    // Build OpenAI-format messages array
+    const messages: { role: string; content: string }[] = [
+      { role: "system", content: systemContent },
+      // previous turns (exclude the last user message we just inserted — it's added below)
+      ...history.slice(0, -1).map((m: any) => ({
+        role: m.role === "user" ? "user" : "assistant",
+        content: m.content,
+      })),
+      { role: "user", content: userMessage },
+    ];
+
+    const hfToken = process.env.HF_TOKEN;
+    if (!hfToken) {
+      const payload = buildTFIDFSummaryPayload(material.title, material.content || "", "Standard");
+      const reply = payload.summary || "AI is not configured on this server.";
+      await execute(
+        "INSERT INTO material_chat_messages (material_id, user_id, role, content) VALUES ($1, $2, 'assistant', $3)",
+        [materialId, req.user.id, reply]
+      );
+      return res.json({ reply });
+    }
+
+    const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
+    const hfUrl = "https://router.huggingface.co/v1/chat/completions";
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    let fullReply = "";
+
+    try {
+      const hfRes = await fetch(hfUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${hfToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, max_tokens: 512, stream: true }),
+      });
+
+      if (!hfRes.ok || !hfRes.body) {
+        const errText = await hfRes.text();
+        throw new Error(`HF error ${hfRes.status}: ${errText.slice(0, 300)}`);
+      }
+
+      const reader = hfRes.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const raw = line.slice(5).trim();
+          if (raw === "[DONE]") break;
+          try {
+            const parsed = JSON.parse(raw);
+            // OpenAI-format: choices[0].delta.content
+            const chunk: string = parsed?.choices?.[0]?.delta?.content ?? "";
+            if (chunk) {
+              fullReply += chunk;
+              res.write(`data: ${JSON.stringify({ token: chunk })}\n\n`);
+            }
+          } catch { /* skip malformed */ }
+        }
+      }
+    } catch (err: any) {
+      // Fallback: non-streaming call
+      try {
+        const fallRes = await fetch(hfUrl, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${hfToken}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model, messages, max_tokens: 512, stream: false }),
+        });
+        const data = await fallRes.json() as any;
+        fullReply = data?.choices?.[0]?.message?.content ?? "";
+        if (fullReply) res.write(`data: ${JSON.stringify({ token: fullReply })}\n\n`);
+      } catch {
+        fullReply = "Sorry, the AI model is temporarily unavailable. Please try again in a moment.";
+        res.write(`data: ${JSON.stringify({ token: fullReply })}\n\n`);
+      }
+    }
+
+    const cleanReply = fullReply.trim();
+    if (cleanReply) {
+      await execute(
+        "INSERT INTO material_chat_messages (material_id, user_id, role, content) VALUES ($1, $2, 'assistant', $3)",
+        [materialId, req.user.id, cleanReply]
+      );
+    }
+
+    res.write("data: [DONE]\n\n");
+    res.end();
+  });
+
+  /**
+   * POST /api/materials/:id/quiz/generate-ai  (faculty only)
+   * Body: { prompt?: string, count?: number }
+   * Asks Qwen to generate quiz questions and returns them as JSON for faculty review.
+   * Does NOT save to DB — faculty must call PUT /api/materials/:id/quiz/questions to save.
+   */
+  app.post("/api/materials/:id/quiz/generate-ai", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const materialId = Number(req.params.id);
+    const material = await queryOne<any>(
+      "SELECT content, title, course_id FROM course_materials WHERE id = $1",
+      [materialId]
+    );
+    if (!material) return res.status(404).json({ error: "Material not found" });
+    if (!(await canManageCourse(req.user, material.course_id))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const count = Math.min(Number(req.body?.count ?? 5), 10);
+    const facultyInstruction = String(req.body?.prompt || "").trim() ||
+      `Generate ${count} multiple choice questions that test conceptual understanding of the key ideas in this reading.`;
+
+    const docContext = sampleForSummarization(cleanOCRText(material.content || ""), 4000);
+
+    const hfToken = process.env.HF_TOKEN;
+    if (!hfToken) return res.status(503).json({ error: "HF_TOKEN not configured" });
+
+    const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
+    const hfUrl = "https://router.huggingface.co/v1/chat/completions";
+
+    const systemMsg = `You are a quiz writer creating multiple-choice questions for an academic reading titled "${material.title}".
+
+READING MATERIAL:
+"""
+${docContext}
+"""
+
+Rules:
+- Base every question STRICTLY on the reading material.
+- correctAnswer is the 0-indexed position of the correct option (0, 1, 2, or 3).
+- All 4 options must be plausible.
+- Questions must test conceptual understanding, not just recall.
+- Return ONLY a valid JSON array — no markdown, no preamble.`;
+
+    const userMsg = `${facultyInstruction}
+
+Return ONLY a JSON array of exactly ${count} objects, each with this exact shape:
+{"question":"...","options":["A","B","C","D"],"correctAnswer":0,"explanation":"..."}`;
+
+    try {
+      const hfRes = await fetch(hfUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${hfToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemMsg },
+            { role: "user", content: userMsg },
+          ],
+          max_tokens: 1500,
+          stream: false,
+        }),
+      });
+
+      if (!hfRes.ok) {
+        const e = await hfRes.text();
+        throw new Error(`HF ${hfRes.status}: ${e.slice(0, 200)}`);
+      }
+
+      const data = await hfRes.json() as any;
+      const raw: string = data?.choices?.[0]?.message?.content ?? "";
+
+      const match = raw.match(/\[[\s\S]*\]/);
+      if (!match) throw new Error("Model did not return a JSON array");
+      const questions = JSON.parse(match[0]) as any[];
+
+      const normalised = questions.slice(0, count).map((q: any, i: number) => ({
+        question: String(q.question || `Question ${i + 1}`),
+        options: Array.isArray(q.options) && q.options.length === 4
+          ? q.options.map(String)
+          : ["Option A", "Option B", "Option C", "Option D"],
+        correctAnswer: typeof q.correctAnswer === "number" ? q.correctAnswer : 0,
+        explanation: String(q.explanation || "See the reading material for details."),
+      }));
+
+      res.json({ questions: normalised });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to generate quiz questions" });
+    }
+  });
+
+  /**
+   * PUT /api/materials/:id/quiz/questions  (faculty only)
+   * Body: { questions: QuizQuestion[] }
+   * Replaces all quiz questions for a material with the provided set.
+   */
+  app.put("/api/materials/:id/quiz/questions", authenticate, async (req: any, res) => {
+    if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
+    const materialId = Number(req.params.id);
+    const material = await queryOne<any>(
+      "SELECT course_id FROM course_materials WHERE id = $1",
+      [materialId]
+    );
+    if (!material) return res.status(404).json({ error: "Material not found" });
+    if (!(await canManageCourse(req.user, material.course_id))) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const questions: any[] = Array.isArray(req.body?.questions) ? req.body.questions : [];
+    if (questions.length === 0) return res.status(400).json({ error: "No questions provided" });
+
+    await execute("DELETE FROM material_quiz_questions WHERE material_id = $1", [materialId]);
+
+    for (let i = 0; i < questions.length; i++) {
+      const raw = questions[i];
+      // Shuffle options so the correct answer isn't always option A
+      const shuffled = shuffleQuizOptions({
+        question: String(raw.question),
+        options: Array.isArray(raw.options) ? raw.options.map(String) : ["A", "B", "C", "D"],
+        correctAnswer: typeof raw.correctAnswer === "number" ? raw.correctAnswer : 0,
+        explanation: String(raw.explanation || ""),
+      });
+      await execute(
+        `INSERT INTO material_quiz_questions
+           (material_id, question_order, question_text, options, correct_answer, explanation)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          materialId,
+          i + 1,
+          shuffled.question,
+          JSON.stringify(shuffled.options),
+          shuffled.correctAnswer,
+          shuffled.explanation,
+        ]
+      );
+    }
+
+    res.json({ success: true, count: questions.length });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
 
   app.get("/api/courses/:id/quiz-reports", authenticate, async (req: any, res) => {
     if (req.user.role !== "faculty") return res.status(403).json({ error: "Forbidden" });
@@ -3968,6 +4678,43 @@ async function startServer() {
 
   // ── End Attendance routes ──────────────────────────────────────────────
 
+  // ── Notifications endpoints ────────────────────────────────────────────
+
+  // GET /api/notifications — returns recent notifications for the logged-in user
+  app.get("/api/notifications", authenticate, async (req: any, res) => {
+    const limit = Math.min(Number(req.query.limit || 30), 100);
+    const rows = await query<any>(
+      `SELECT id, type, title, body, course_id, material_id, is_read, created_at
+       FROM notifications
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [req.user.id, limit]
+    );
+    const unread_count = rows.filter((r: any) => !r.is_read).length;
+    res.json({ notifications: rows, unread_count });
+  });
+
+  // POST /api/notifications/mark-read — mark one or all notifications as read
+  app.post("/api/notifications/mark-read", authenticate, async (req: any, res) => {
+    const { id } = req.body || {};
+    if (id) {
+      await execute(
+        "UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2",
+        [Number(id), req.user.id]
+      );
+    } else {
+      // Mark all as read
+      await execute(
+        "UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE",
+        [req.user.id]
+      );
+    }
+    res.json({ success: true });
+  });
+
+  // ── End Notifications endpoints ────────────────────────────────────────
+
   app.get("/api/booster/sessions", authenticate, async (req: any, res) => {
     const sessions = await query<any>(
       `
@@ -3978,6 +4725,7 @@ async function startServer() {
           m.summary,
           m.key_takeaways,
           m.source_type,
+          m.source_url,
           m.created_at,
           c.name as course_name,
           c.code as course_code,
@@ -4007,7 +4755,7 @@ async function startServer() {
     );
 
     const transformed = sessions.map((s: any) => ({
-      id: s.id.toString(),
+      id: s.id.toString(),          // session.id == material ID string (used for quiz/progress routes)
       title: s.title,
       date: s.created_at ? new Date(s.created_at).toLocaleDateString() : "No date",
       estimatedTime: "30 mins",
@@ -4015,12 +4763,13 @@ async function startServer() {
       status: s.quiz_completed_at || s.quiz_attempted_at ? "completed" : s.opened_at ? "in_progress" : "not_started",
       items: [
         {
-          id: `item-${s.id}`,
+          id: s.id,                 // numeric material ID — used for /api/materials/:id/chat
           title: s.title,
           type: s.source_type === "link" ? "article" : "pdf",
           content: s.content || "",
           summary: s.summary || "",
           keyTakeaways: safeJson(s.key_takeaways, []),
+          source_url: s.source_url || null,
         },
       ],
     }));

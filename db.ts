@@ -231,6 +231,17 @@ async function ensureSchema() {
       PRIMARY KEY (material_id, user_id)
     );
 
+    CREATE TABLE IF NOT EXISTS material_chat_messages (
+      id SERIAL PRIMARY KEY,
+      material_id INTEGER NOT NULL REFERENCES course_materials(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_material_chat_messages_lookup
+      ON material_chat_messages (material_id, user_id, created_at);
+
     CREATE TABLE IF NOT EXISTS summaries (
       id SERIAL PRIMARY KEY,
       activity_id INTEGER NOT NULL,
@@ -285,6 +296,18 @@ async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS idx_session_attendance_session ON session_attendance (session_id);
     ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS session_status TEXT DEFAULT 'scheduled' CHECK (session_status IN ('scheduled','completed','cancelled','rescheduled'));
     ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS original_date DATE;
+    CREATE TABLE IF NOT EXISTS notifications (
+      id            SERIAL PRIMARY KEY,
+      user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type          TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      body          TEXT NOT NULL DEFAULT '',
+      course_id     INTEGER REFERENCES courses(id) ON DELETE SET NULL,
+      material_id   INTEGER REFERENCES course_materials(id) ON DELETE SET NULL,
+      is_read       BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications (user_id, is_read, created_at DESC);
   `);
 }
 

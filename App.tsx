@@ -168,6 +168,8 @@ const App: React.FC = () => {
     }
   };
 
+  const isFullPage = activeTab === NavigationTab.LEARN_MODE && !!activeSession;
+
   return (
     <Layout
       activeTab={activeTab}
@@ -175,6 +177,7 @@ const App: React.FC = () => {
       role={user.role}
       user={user}
       onLogout={handleLogout}
+      noPadding={isFullPage}
       onSelectCourse={(id) => {
         setSelectedCourseId(id);
         setActiveTab(NavigationTab.COURSE_MANAGEMENT);

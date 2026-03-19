@@ -189,3 +189,14 @@ CREATE TABLE IF NOT EXISTS material_learning_progress (
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (material_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS material_chat_messages (
+  id SERIAL PRIMARY KEY,
+  material_id INTEGER NOT NULL REFERENCES course_materials(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_material_chat_messages_lookup
+  ON material_chat_messages (material_id, user_id, created_at);

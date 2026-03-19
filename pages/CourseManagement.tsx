@@ -63,9 +63,22 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"course" | "materials" | "participants" | "reports" | "attendance">(
+  const [activeTab, setActiveTab] = useState<"course" | "materials" | "participants" | "reports" | "prereads" | "attendance">(
     "course"
   );
+
+  // Pre-read analytics (faculty)
+  type PreReadStudentRow = {
+    student_id: number; student_name: string; student_email: string;
+    assigned_readings: number; opened_readings: number; read_readings: number;
+    quiz_completed_readings: number; avg_quiz_percent: number | null;
+  };
+  type PreReadAnalytics = {
+    summary: { total_students: number; opened_any: number; completed_any_quiz: number };
+    students: PreReadStudentRow[];
+  };
+  const [preReadAnalytics, setPreReadAnalytics] = useState<PreReadAnalytics | null>(null);
+  const [preReadAnalyticsLoading, setPreReadAnalyticsLoading] = useState(false);
 
   const [savingDetails, setSavingDetails] = useState(false);
   const [uploadingMaterial, setUploadingMaterial] = useState(false);
@@ -298,6 +311,17 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     }, 5000);
     return () => window.clearTimeout(timer);
   }, [feedbackSubmitAcknowledged]);
+
+  // Lazy-load pre-read analytics when faculty opens Pre-reads tab
+  useEffect(() => {
+    if (role !== "faculty" || activeTab !== "prereads" || preReadAnalytics || preReadAnalyticsLoading) return;
+    setPreReadAnalyticsLoading(true);
+    fetch(`/api/courses/${courseId}/pre-read-analytics`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : null)
+      .then((data: PreReadAnalytics | null) => { if (data) setPreReadAnalytics(data); })
+      .catch(() => {})
+      .finally(() => setPreReadAnalyticsLoading(false));
+  }, [activeTab, role, courseId, preReadAnalytics, preReadAnalyticsLoading]);
 
   // Lazy-load attendance summary when faculty opens Attendance tab
   useEffect(() => {
@@ -1067,21 +1091,6 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
                     </div>
                   </div>
 
-                  {material.summary && (
-                    <div className="bg-slate-50 border border-slate-100 rounded p-3 text-sm text-slate-700">
-                      <div className="font-bold text-slate-800 mb-1">Generated Summary</div>
-                      <p>{material.summary}</p>
-                    </div>
-                  )}
-
-                  {(material.key_takeaways || []).length > 0 && (
-                    <ul className="list-disc pl-5 text-sm text-slate-700 space-y-1">
-                      {(material.key_takeaways || []).map((k, idx) => (
-                        <li key={idx}>{k}</li>
-                      ))}
-                    </ul>
-                  )}
-
                   {material.latest_total ? (
                     <p className="text-xs font-bold text-emerald-600">
                       Last quiz score: {material.latest_score}/{material.latest_total}
@@ -1104,6 +1113,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
           { id: "materials", label: "Reading Materials" },
           { id: "participants", label: "Participants" },
           { id: "reports", label: "Quiz Reports" },
+          ...(role === "faculty" ? [{ id: "prereads", label: "Pre-read Analytics" }] : []),
           ...(role === "faculty" ? [{ id: "attendance", label: "Attendance" }] : []),
         ].map((tab) => (
           <button
@@ -1928,6 +1938,119 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
                 );
               })}
             </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Pre-read Analytics Tab (faculty only) ──────────────────────────── */}
+      {activeTab === "prereads" && (
+        <div className="space-y-6">
+          {preReadAnalyticsLoading ? (
+            <div className="flex justify-center py-10"><Loader2 size={28} className="animate-spin text-moodle-blue" /></div>
+          ) : !preReadAnalytics ? (
+            <p className="text-sm text-slate-500 italic">No data available yet.</p>
+          ) : (
+            <>
+              {/* Summary cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="moodle-card p-4">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Total Enrolled</p>
+                  <p className="text-3xl font-black text-slate-800 mt-1">{preReadAnalytics.summary.total_students}</p>
+                </div>
+                <div className="moodle-card p-4">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Opened ≥ 1 Reading</p>
+                  <p className="text-3xl font-black text-moodle-blue mt-1">{preReadAnalytics.summary.opened_any}</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {preReadAnalytics.summary.total_students > 0
+                      ? Math.round((preReadAnalytics.summary.opened_any / preReadAnalytics.summary.total_students) * 100)
+                      : 0}% of class
+                  </p>
+                </div>
+                <div className="moodle-card p-4">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Completed ≥ 1 Quiz</p>
+                  <p className="text-3xl font-black text-emerald-600 mt-1">{preReadAnalytics.summary.completed_any_quiz}</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {preReadAnalytics.summary.total_students > 0
+                      ? Math.round((preReadAnalytics.summary.completed_any_quiz / preReadAnalytics.summary.total_students) * 100)
+                      : 0}% of class
+                  </p>
+                </div>
+              </div>
+
+              {/* Not-started list */}
+              {(() => {
+                const notStarted = preReadAnalytics.students.filter(s => Number(s.opened_readings) === 0);
+                if (notStarted.length === 0) return null;
+                return (
+                  <div className="moodle-card p-5 border-l-4 border-amber-400">
+                    <p className="text-sm font-bold text-amber-700 mb-3">
+                      ⚠ {notStarted.length} student{notStarted.length > 1 ? "s" : ""} haven't opened any reading yet
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {notStarted.map(s => (
+                        <span key={s.student_id} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold px-2.5 py-1 rounded-full">
+                          {s.student_name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Per-student table */}
+              <div className="moodle-card overflow-x-auto">
+                <div className="px-5 py-4 border-b border-slate-100">
+                  <h3 className="text-sm font-bold text-slate-800">Student Completion Breakdown</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Shows opened / read / quiz done out of assigned readings</p>
+                </div>
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Student</th>
+                      <th className="px-4 py-3 text-center">Assigned</th>
+                      <th className="px-4 py-3 text-center">Opened</th>
+                      <th className="px-4 py-3 text-center">Read</th>
+                      <th className="px-4 py-3 text-center">Quiz Done</th>
+                      <th className="px-4 py-3 text-center">Avg Quiz %</th>
+                      <th className="px-4 py-3 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {preReadAnalytics.students.map((s) => {
+                      const assigned = Number(s.assigned_readings);
+                      const quizDone = Number(s.quiz_completed_readings);
+                      const pct = assigned > 0 ? Math.round((quizDone / assigned) * 100) : 0;
+                      const statusColor = pct === 100 ? "text-emerald-600 bg-emerald-50" : pct >= 50 ? "text-amber-600 bg-amber-50" : "text-red-600 bg-red-50";
+                      const statusLabel = pct === 100 ? "✓ Complete" : pct >= 50 ? "In Progress" : "Not Started";
+                      return (
+                        <tr key={s.student_id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-4 py-3">
+                            <p className="font-semibold text-slate-800">{s.student_name}</p>
+                            <p className="text-xs text-slate-400">{s.student_email}</p>
+                          </td>
+                          <td className="px-4 py-3 text-center font-bold text-slate-700">{s.assigned_readings}</td>
+                          <td className="px-4 py-3 text-center text-slate-600">{s.opened_readings}</td>
+                          <td className="px-4 py-3 text-center text-slate-600">{s.read_readings}</td>
+                          <td className="px-4 py-3 text-center font-bold text-moodle-blue">{s.quiz_completed_readings}</td>
+                          <td className="px-4 py-3 text-center">
+                            {s.avg_quiz_percent != null ? (
+                              <span className={`font-bold ${Number(s.avg_quiz_percent) >= 70 ? "text-emerald-600" : Number(s.avg_quiz_percent) >= 50 ? "text-amber-600" : "text-red-500"}`}>
+                                {Number(s.avg_quiz_percent).toFixed(0)}%
+                              </span>
+                            ) : <span className="text-slate-400">—</span>}
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${statusColor}`}>
+                              {statusLabel}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       )}

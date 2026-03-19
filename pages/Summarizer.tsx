@@ -1,10 +1,18 @@
 
 import React, { useState, useRef } from 'react';
-import { FileText, Loader2, Sparkles, Copy, Check, ExternalLink, AlertCircle, Upload, X } from 'lucide-react';
+import { FileText, Loader2, Sparkles, Copy, Check, ExternalLink, AlertCircle, Upload, X, Target } from 'lucide-react';
 import { SummaryResult } from '../types';
 import { geminiService } from '../services/geminiService';
 
 type DetailLevel = 'Brief' | 'Standard' | 'Detailed';
+
+const FOCUS_PRESETS = [
+  { label: '📊 Key data & numbers', value: 'Focus on key data, numbers, statistics, and quantitative findings' },
+  { label: '🧠 Main argument', value: 'Focus on the main thesis, central argument, and supporting evidence' },
+  { label: '📋 Executive overview', value: 'Provide a concise executive-style overview suitable for a business audience' },
+  { label: '🔢 Step-by-step process', value: 'Break down any frameworks, processes, or step-by-step methodologies described' },
+  { label: '📈 Exhibits & visuals', value: 'Focus on explaining the exhibits, charts, figures, and tables referenced in the document' },
+];
 
 const Summarizer: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -16,7 +24,25 @@ const Summarizer: React.FC = () => {
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
   const [detailLevel, setDetailLevel] = useState<DetailLevel>('Standard');
+  const [focusPrompt, setFocusPrompt] = useState('');
+  const [activePreset, setActivePreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleSelectPreset = (preset: typeof FOCUS_PRESETS[0]) => {
+    if (activePreset === preset.value) {
+      // Toggle off
+      setActivePreset(null);
+      setFocusPrompt('');
+    } else {
+      setActivePreset(preset.value);
+      setFocusPrompt(preset.value);
+    }
+  };
+
+  const handleFocusTextChange = (val: string) => {
+    setFocusPrompt(val);
+    setActivePreset(null); // deselect preset if user types custom text
+  };
 
   const handleSummarize = async () => {
     if (!content) return;
@@ -24,7 +50,7 @@ const Summarizer: React.FC = () => {
     setError(null);
     setSummary(null);
     try {
-      const result = await geminiService.summarizeContent(title || 'Untitled Reading', content, detailLevel);
+      const result = await geminiService.summarizeContent(title || 'Untitled Reading', content, detailLevel, focusPrompt);
       if (!result.summary) throw new Error('No summary returned. Try pasting more content (at least a few paragraphs).');
       setSummary(result);
     } catch (err: any) {
@@ -136,6 +162,42 @@ const Summarizer: React.FC = () => {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* ── Focus Prompt ── */}
+          <div className="space-y-2.5">
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+              <Target size={12} />
+              Focus (optional)
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {FOCUS_PRESETS.map((preset) => (
+                <button
+                  key={preset.value}
+                  onClick={() => handleSelectPreset(preset)}
+                  className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-all ${
+                    activePreset === preset.value
+                      ? 'bg-moodle-blue text-white border-moodle-blue'
+                      : 'bg-white text-slate-600 border-slate-300 hover:border-moodle-blue hover:text-moodle-blue'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+            <input
+              type="text"
+              value={activePreset ? '' : focusPrompt}
+              onChange={(e) => handleFocusTextChange(e.target.value)}
+              placeholder="Or type a custom focus, e.g. explain the financial analysis in Exhibit 3..."
+              className="w-full bg-white border border-slate-300 rounded px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-moodle-blue placeholder:text-slate-400"
+            />
+            {focusPrompt && (
+              <p className="text-[11px] text-moodle-blue font-medium">
+                ✓ Focused on: <span className="italic">{focusPrompt.slice(0, 80)}{focusPrompt.length > 80 ? '…' : ''}</span>
+                <button onClick={() => { setFocusPrompt(''); setActivePreset(null); }} className="ml-2 text-slate-400 hover:text-red-500">✕</button>
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
