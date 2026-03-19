@@ -835,57 +835,37 @@ async function summarizeWithAI(title: string, content: string, detailLevel: "Bri
 
   const cleaned = stripLeadingBoilerplate(content);
 
-  // ── Chunked / hierarchical summarisation ──────────────────────────────
-  // 1. Split into ~3 000-char chunks (sentence boundaries).
-  // 2. Summarise each chunk independently → mini-summaries.
-  // 3. Summarise the mini-summaries → final summary.
-  // 4. Expose mini-summaries as labeled key takeaways (no TF-IDF gibberish).
-  // ─────────────────────────────────────────────────────────────────────
-  const CHUNK_SIZE = 3000;
-  const chunks = splitIntoChunks(cleaned, CHUNK_SIZE);
+  // Smart-sample: prioritise beginning (intro/abstract) and end (conclusion)
+  // so the single BART call gets the most informative portion.
+  const sampleSize =
+    detailLevel === "Brief" ? 2800 : detailLevel === "Detailed" ? 4500 : 3600;
+  const inputText = sampleForSummarization(cleaned, sampleSize);
 
-  // Mini-summary params: keep them concise so the final pass has room.
-  const miniParams = { max_length: 150, min_length: 30 };
-
-  // Summarise each chunk in sequence (HF free tier has rate limits).
-  const miniSummaries: string[] = [];
-  for (const chunk of chunks) {
-    const mini = await callBartAPI(url, token, chunk, miniParams);
-    miniSummaries.push(mini);
-  }
-
-  // Final summary length based on detail level.
-  const finalParams =
+  // Detail-level controls the summary length target.
+  const summaryParams =
     detailLevel === "Brief"
-      ? { max_length: 220, min_length: 60 }
+      ? { max_length: 180, min_length: 60 }
       : detailLevel === "Detailed"
-      ? { max_length: 650, min_length: 200 }
-      : { max_length: 450, min_length: 120 };
+      ? { max_length: 520, min_length: 180 }
+      : { max_length: 350, min_length: 100 };
 
-  let finalSummary: string;
-  const combinedMinis = miniSummaries.join(" ");
-  if (miniSummaries.length > 1) {
-    // Summarise the mini summaries for a coherent final overview.
-    finalSummary = await callBartAPI(url, token, combinedMinis, finalParams);
-  } else {
-    // Only one chunk — use as final summary directly (already inside length).
-    finalSummary = miniSummaries[0] || combinedMinis;
-  }
+  const summaryText = await callBartAPI(url, token, inputText, summaryParams);
 
-  // Labels for key takeaways (one per chunk).
-  const labels =
-    miniSummaries.length === 1
-      ? ["Key Insight"]
-      : miniSummaries.map((_, i) => `Part ${i + 1}`);
-
-  // TF-IDF only for further reading suggestions (avoids the gibberish takeaway issue).
+  // TF-IDF on the full cleaned text → deduped, filtered key takeaways.
   const tfidf = buildTFIDFSummaryPayload(title, cleaned, detailLevel);
+
+  const takeaways = tfidf.keyTakeaways.length >= 2
+    ? tfidf.keyTakeaways
+    : [summaryText]; // fallback if TF-IDF yields nothing useful
+
+  // Generic labels for the takeaway cards in the UI.
+  const keyTakeawayLabels = takeaways.map((_, i) => `Key Insight ${i + 1}`);
 
   return {
     title,
-    summary: finalSummary,
-    keyTakeaways: miniSummaries,
-    keyTakeawayLabels: labels,
+    summary: summaryText,
+    keyTakeaways: takeaways,
+    keyTakeawayLabels,
     furtherReading: tfidf.furtherReading.slice(0, detailLevel === "Detailed" ? 5 : 3),
   };
 }
@@ -3859,6 +3839,134 @@ async function startServer() {
       res.status(500).json({ error: error.message || "Failed to fetch pending sessions" });
     }
   });
+
+  // ── Attendance routes ──────────────────────────────────────────────────
+
+  // GET /api/sessions/:id/attendance  — faculty: list all enrolled students with status
+  app.get("/api/sessions/:id/attendance", authenticate, async (req: any, res) => {
+    try {
+      const user = req.user;
+      if (user.role !== "faculty") return res.status(403).json({ error: "Faculty only" });
+      const sessionId = Number(req.params.id);
+      // Verify faculty owns the session's course
+      const session = await queryOne<any>(
+        `SELECT cs.id, cs.course_id, c.name AS course_name, cs.title AS session_title, cs.session_date
+         FROM course_sessions cs JOIN courses c ON c.id = cs.course_id
+         WHERE cs.id = $1 AND c.created_by = $2`,
+        [sessionId, user.id]
+      );
+      if (!session) return res.status(404).json({ error: "Session not found." });
+
+      // Get all enrolled students with attendance status for this session
+      const rows = await query<any>(
+        `SELECT u.id AS student_id, u.name, u.email,
+                COALESCE(sa.status, 'present') AS status,
+                sa.note,
+                sa.marked_at
+         FROM enrollments e
+         JOIN users u ON u.id = e.user_id
+         LEFT JOIN session_attendance sa ON sa.session_id = $1 AND sa.student_id = u.id
+         WHERE e.course_id = $2
+         ORDER BY u.name`,
+        [sessionId, session.course_id]
+      );
+      res.json({ session, students: rows });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to fetch attendance" });
+    }
+  });
+
+  // POST /api/sessions/:id/attendance  — faculty: save bulk attendance
+  // Body: { records: [{ student_id, status, note? }] }
+  app.post("/api/sessions/:id/attendance", authenticate, async (req: any, res) => {
+    try {
+      const user = req.user;
+      if (user.role !== "faculty") return res.status(403).json({ error: "Faculty only" });
+      const sessionId = Number(req.params.id);
+      const records: { student_id: number; status: string; note?: string }[] = req.body?.records || [];
+
+      // Verify faculty owns the session
+      const owns = await queryOne<any>(
+        `SELECT cs.id FROM course_sessions cs JOIN courses c ON c.id = cs.course_id
+         WHERE cs.id = $1 AND c.created_by = $2`,
+        [sessionId, user.id]
+      );
+      if (!owns) return res.status(404).json({ error: "Session not found." });
+
+      const validStatuses = ["present", "absent", "late", "excused"];
+      for (const rec of records) {
+        const status = validStatuses.includes(rec.status) ? rec.status : "present";
+        await execute(
+          `INSERT INTO session_attendance (session_id, student_id, status, note, marked_by, marked_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())
+           ON CONFLICT (session_id, student_id)
+           DO UPDATE SET status = EXCLUDED.status, note = EXCLUDED.note,
+                         marked_by = EXCLUDED.marked_by, marked_at = NOW()`,
+          [sessionId, rec.student_id, status, rec.note || null, user.id]
+        );
+      }
+      res.json({ ok: true, count: records.length });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to save attendance" });
+    }
+  });
+
+  // GET /api/courses/:id/attendance/summary — faculty: per-session attendance overview
+  app.get("/api/courses/:id/attendance/summary", authenticate, async (req: any, res) => {
+    try {
+      const user = req.user;
+      if (user.role !== "faculty") return res.status(403).json({ error: "Faculty only" });
+      const courseId = Number(req.params.id);
+      const ok = await canManageCourse(user, courseId);
+      if (!ok) return res.status(403).json({ error: "Not your course." });
+
+      const sessions = await query<any>(
+        `SELECT cs.id AS session_id, cs.session_number, cs.title AS session_title,
+                cs.session_date, cs.session_status,
+                COUNT(sa.id) AS marked_count,
+                SUM(CASE WHEN sa.status = 'present' THEN 1 ELSE 0 END)::int AS present_count,
+                SUM(CASE WHEN sa.status = 'absent'  THEN 1 ELSE 0 END)::int AS absent_count,
+                SUM(CASE WHEN sa.status = 'late'    THEN 1 ELSE 0 END)::int AS late_count,
+                SUM(CASE WHEN sa.status = 'excused' THEN 1 ELSE 0 END)::int AS excused_count
+         FROM course_sessions cs
+         LEFT JOIN session_attendance sa ON sa.session_id = cs.id
+         WHERE cs.course_id = $1
+         GROUP BY cs.id
+         ORDER BY cs.session_date`,
+        [courseId]
+      );
+
+      const totalEnrolled = await queryOne<{ cnt: number }>(
+        `SELECT COUNT(*)::int AS cnt FROM enrollments WHERE course_id = $1`, [courseId]
+      );
+
+      res.json({ sessions, total_enrolled: totalEnrolled?.cnt ?? 0 });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to fetch attendance summary" });
+    }
+  });
+
+  // GET /api/courses/:id/attendance/student  — student: own attendance record
+  app.get("/api/courses/:id/attendance/student", authenticate, async (req: any, res) => {
+    try {
+      const user = req.user;
+      const courseId = Number(req.params.id);
+      const rows = await query<any>(
+        `SELECT cs.session_number, cs.title AS session_title, cs.session_date,
+                COALESCE(sa.status, 'not_marked') AS status, sa.note
+         FROM course_sessions cs
+         LEFT JOIN session_attendance sa ON sa.session_id = cs.id AND sa.student_id = $1
+         WHERE cs.course_id = $2
+         ORDER BY cs.session_date`,
+        [user.id, courseId]
+      );
+      res.json(rows);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || "Failed to fetch attendance" });
+    }
+  });
+
+  // ── End Attendance routes ──────────────────────────────────────────────
 
   app.get("/api/booster/sessions", authenticate, async (req: any, res) => {
     const sessions = await query<any>(

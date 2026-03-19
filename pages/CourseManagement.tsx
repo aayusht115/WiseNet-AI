@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Loader2, MessageSquareText, Plus, Sparkles, Trash2, UploadCloud } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, ClipboardList, Loader2, MessageSquareText, Plus, Save, Sparkles, Trash2, UploadCloud, UserCheck, Users } from "lucide-react";
 import ParticipantEnrollmentPanel, {
   ParticipantUser,
 } from "../components/ParticipantEnrollmentPanel";
@@ -63,7 +63,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"course" | "materials" | "participants" | "reports">(
+  const [activeTab, setActiveTab] = useState<"course" | "materials" | "participants" | "reports" | "attendance">(
     "course"
   );
 
@@ -109,6 +109,27 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
   const [textFeedbackLoading, setTextFeedbackLoading] = useState(false);
   const [feedbackSummaries, setFeedbackSummaries] = useState<Record<number, QuestionSummary>>({});
   const [expandedResponses, setExpandedResponses] = useState<Record<number, boolean>>({});
+
+  // Attendance state (faculty)
+  type AttendanceSummaryRow = {
+    session_id: number; session_number: number; session_title: string;
+    session_date: string; session_status: string;
+    marked_count: number; present_count: number; absent_count: number;
+    late_count: number; excused_count: number;
+  };
+  type AttendanceStudent = {
+    student_id: number; name: string; email: string;
+    status: "present" | "absent" | "late" | "excused"; note?: string; marked_at?: string;
+  };
+  const [attendanceSummary, setAttendanceSummary] = useState<AttendanceSummaryRow[]>([]);
+  const [totalEnrolled, setTotalEnrolled] = useState(0);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
+  const [selectedAttendanceSession, setSelectedAttendanceSession] = useState<AttendanceSummaryRow | null>(null);
+  const [sessionStudents, setSessionStudents] = useState<AttendanceStudent[]>([]);
+  const [sessionStudentsLoading, setSessionStudentsLoading] = useState(false);
+  const [attendanceEdits, setAttendanceEdits] = useState<Record<number, { status: string; note: string }>>({});
+  const [savingAttendance, setSavingAttendance] = useState(false);
+  const [attendanceNotice, setAttendanceNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const [materialForm, setMaterialForm] = useState({
     section_id: "",
@@ -277,6 +298,67 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
     }, 5000);
     return () => window.clearTimeout(timer);
   }, [feedbackSubmitAcknowledged]);
+
+  // Lazy-load attendance summary when faculty opens Attendance tab
+  useEffect(() => {
+    if (role !== "faculty" || activeTab !== "attendance" || attendanceSummary.length > 0 || attendanceLoading) return;
+    setAttendanceLoading(true);
+    fetch(`/api/courses/${courseId}/attendance/summary`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : { sessions: [], total_enrolled: 0 })
+      .then((data: { sessions: AttendanceSummaryRow[]; total_enrolled: number }) => {
+        setAttendanceSummary(data.sessions || []);
+        setTotalEnrolled(data.total_enrolled || 0);
+      })
+      .catch(() => {})
+      .finally(() => setAttendanceLoading(false));
+  }, [activeTab, role, courseId, attendanceSummary.length, attendanceLoading]);
+
+  const openAttendanceSession = (row: AttendanceSummaryRow) => {
+    setSelectedAttendanceSession(row);
+    setAttendanceEdits({});
+    setAttendanceNotice(null);
+    setSessionStudentsLoading(true);
+    fetch(`/api/sessions/${row.session_id}/attendance`, { credentials: "include" })
+      .then(r => r.ok ? r.json() : { students: [] })
+      .then((data: { students: AttendanceStudent[] }) => {
+        setSessionStudents(data.students || []);
+        // Initialise edits from current status
+        const edits: Record<number, { status: string; note: string }> = {};
+        for (const s of data.students || []) {
+          edits[s.student_id] = { status: s.status || "present", note: s.note || "" };
+        }
+        setAttendanceEdits(edits);
+      })
+      .catch(() => {})
+      .finally(() => setSessionStudentsLoading(false));
+  };
+
+  const saveAttendance = async () => {
+    if (!selectedAttendanceSession) return;
+    setSavingAttendance(true);
+    setAttendanceNotice(null);
+    try {
+      const records = Object.entries(attendanceEdits).map(([sid, val]) => ({
+        student_id: Number(sid),
+        status: (val as { status: string; note: string }).status,
+        note: (val as { status: string; note: string }).note || undefined,
+      }));
+      const r = await fetch(`/api/sessions/${selectedAttendanceSession.session_id}/attendance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ records }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error);
+      setAttendanceNotice({ type: "success", text: `Attendance saved for ${records.length} students.` });
+      // Refresh summary row counts
+      setAttendanceSummary([]);
+    } catch (e: any) {
+      setAttendanceNotice({ type: "error", text: e.message || "Failed to save attendance." });
+    } finally {
+      setSavingAttendance(false);
+    }
+  };
 
   // Lazy-load text feedback responses when faculty opens Reports tab
   useEffect(() => {
@@ -1022,6 +1104,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
           { id: "materials", label: "Reading Materials" },
           { id: "participants", label: "Participants" },
           { id: "reports", label: "Quiz Reports" },
+          ...(role === "faculty" ? [{ id: "attendance", label: "Attendance" }] : []),
         ].map((tab) => (
           <button
             key={tab.id}
@@ -1844,6 +1927,194 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, onB
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Attendance Tab (faculty only) ─────────────────────────────────── */}
+      {activeTab === "attendance" && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <ClipboardList size={20} className="text-moodle-blue" />
+            <h3 className="text-lg font-bold text-slate-800">Session Attendance</h3>
+            <span className="ml-auto text-xs text-slate-500 bg-slate-100 px-2 py-1 rounded-full">
+              {totalEnrolled} students enrolled
+            </span>
+          </div>
+
+          {attendanceLoading ? (
+            <div className="flex items-center gap-2 text-slate-400 py-10 justify-center">
+              <Loader2 size={20} className="animate-spin" /> Loading sessions…
+            </div>
+          ) : attendanceSummary.length === 0 ? (
+            <div className="moodle-card p-8 text-center text-slate-400">
+              No sessions found for this course.
+            </div>
+          ) : (
+            <div className="moodle-card overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100 text-[10px] uppercase tracking-widest text-slate-400">
+                    <th className="text-left px-4 py-3 font-bold">Session</th>
+                    <th className="text-left px-4 py-3 font-bold">Date</th>
+                    <th className="text-center px-4 py-3 font-bold">Present</th>
+                    <th className="text-center px-4 py-3 font-bold">Absent</th>
+                    <th className="text-center px-4 py-3 font-bold">Late</th>
+                    <th className="text-center px-4 py-3 font-bold">Marked</th>
+                    <th className="px-4 py-3" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {attendanceSummary.map((row) => (
+                    <tr key={row.session_id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+                      <td className="px-4 py-3 font-medium text-slate-800">
+                        S{row.session_number}: {row.session_title}
+                      </td>
+                      <td className="px-4 py-3 text-slate-500">
+                        {new Date(row.session_date + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="font-bold text-emerald-600">{row.present_count ?? 0}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="font-bold text-red-500">{row.absent_count ?? 0}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="font-bold text-amber-500">{row.late_count ?? 0}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {Number(row.marked_count) > 0 ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+                            <UserCheck size={10} /> Marked
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-400 bg-slate-50 border border-slate-200 rounded-full px-2 py-0.5">
+                            Pending
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={() => openAttendanceSession(row)}
+                          className="px-3 py-1.5 text-xs font-bold text-moodle-blue border border-moodle-blue/30 rounded-lg hover:bg-moodle-blue hover:text-white transition-colors"
+                        >
+                          {Number(row.marked_count) > 0 ? "Edit" : "Mark Attendance"}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Session detail panel */}
+          {selectedAttendanceSession && (
+            <div className="moodle-card p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-slate-800">
+                    S{selectedAttendanceSession.session_number}: {selectedAttendanceSession.session_title}
+                  </h4>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {new Date(selectedAttendanceSession.session_date + "T12:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                  </p>
+                </div>
+                <button onClick={() => setSelectedAttendanceSession(null)} className="text-slate-400 hover:text-slate-700">✕</button>
+              </div>
+
+              {attendanceNotice && (
+                <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg ${attendanceNotice.type === "success" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                  {attendanceNotice.type === "success" ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+                  {attendanceNotice.text}
+                </div>
+              )}
+
+              {sessionStudentsLoading ? (
+                <div className="flex items-center gap-2 text-slate-400 py-6 justify-center">
+                  <Loader2 size={18} className="animate-spin" /> Loading students…
+                </div>
+              ) : sessionStudents.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-4">No students enrolled.</p>
+              ) : (
+                <div className="space-y-2">
+                  {/* Quick-select row */}
+                  <div className="flex items-center gap-2 pb-2 border-b border-slate-100">
+                    <span className="text-xs font-semibold text-slate-500 mr-1">Mark all:</span>
+                    {["present", "absent", "late", "excused"].map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => {
+                          const next: Record<number, { status: string; note: string }> = {};
+                          for (const st of sessionStudents) {
+                            next[st.student_id] = { status: s, note: attendanceEdits[st.student_id]?.note || "" };
+                          }
+                          setAttendanceEdits(next);
+                        }}
+                        className={`px-2.5 py-1 text-[10px] font-bold rounded-full border capitalize transition-colors
+                          ${s === "present" ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                          : s === "absent" ? "border-red-300 text-red-600 hover:bg-red-50"
+                          : s === "late" ? "border-amber-300 text-amber-700 hover:bg-amber-50"
+                          : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+
+                  {sessionStudents.map((st) => {
+                    const edit = attendanceEdits[st.student_id] || { status: "present", note: "" };
+                    const statusColour =
+                      edit.status === "present" ? "border-l-emerald-500 bg-emerald-50/30"
+                      : edit.status === "absent" ? "border-l-red-500 bg-red-50/30"
+                      : edit.status === "late" ? "border-l-amber-500 bg-amber-50/30"
+                      : "border-l-slate-400 bg-slate-50";
+
+                    return (
+                      <div key={st.student_id} className={`flex items-center gap-3 p-3 rounded-lg border-l-2 ${statusColour}`}>
+                        <div className="w-8 h-8 rounded-full bg-moodle-blue/10 flex items-center justify-center">
+                          <Users size={14} className="text-moodle-blue" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-slate-800 truncate">{st.name}</p>
+                          <p className="text-[10px] text-slate-400 truncate">{st.email}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={edit.status}
+                            onChange={(e) => setAttendanceEdits(prev => ({ ...prev, [st.student_id]: { ...edit, status: e.target.value } }))}
+                            className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white focus:ring-1 focus:ring-moodle-blue focus:outline-none font-medium"
+                          >
+                            <option value="present">Present</option>
+                            <option value="absent">Absent</option>
+                            <option value="late">Late</option>
+                            <option value="excused">Excused</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={edit.note}
+                            onChange={(e) => setAttendanceEdits(prev => ({ ...prev, [st.student_id]: { ...edit, note: e.target.value } }))}
+                            placeholder="Note (optional)"
+                            className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 w-32 bg-white focus:ring-1 focus:ring-moodle-blue focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div className="flex justify-end pt-2">
+                    <button
+                      onClick={saveAttendance}
+                      disabled={savingAttendance}
+                      className="flex items-center gap-2 px-5 py-2 bg-moodle-blue text-white text-sm font-bold rounded-xl hover:bg-moodle-blue/90 disabled:opacity-60 transition-colors"
+                    >
+                      {savingAttendance ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                      {savingAttendance ? "Saving…" : "Save Attendance"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -238,6 +238,17 @@ async function ensureSchema() {
       summary_json JSONB NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS session_attendance (
+      id SERIAL PRIMARY KEY,
+      session_id INTEGER REFERENCES course_sessions(id) ON DELETE CASCADE,
+      student_id INTEGER REFERENCES users(id),
+      status TEXT NOT NULL DEFAULT 'present' CHECK (status IN ('present','absent','late','excused')),
+      note TEXT,
+      marked_by INTEGER REFERENCES users(id),
+      marked_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (session_id, student_id)
+    );
   `);
 
   await execute(`
@@ -271,6 +282,9 @@ async function ensureSchema() {
     ALTER TABLE feedback_insights ADD COLUMN IF NOT EXISTS viewed_at TIMESTAMPTZ;
     CREATE INDEX IF NOT EXISTS idx_feedback_forms_due_at ON feedback_forms (due_at);
     CREATE INDEX IF NOT EXISTS idx_feedback_insights_course_viewed ON feedback_insights (course_id, viewed_at);
+    CREATE INDEX IF NOT EXISTS idx_session_attendance_session ON session_attendance (session_id);
+    ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS session_status TEXT DEFAULT 'scheduled' CHECK (session_status IN ('scheduled','completed','cancelled','rescheduled'));
+    ALTER TABLE course_sessions ADD COLUMN IF NOT EXISTS original_date DATE;
   `);
 }
 
