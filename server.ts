@@ -1886,7 +1886,7 @@ async function startServer() {
       { expiresIn: "1d" }
     );
     res.cookie("token", token, getCookieOptions());
-    res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
+    res.json({ id: user.id, email: user.email, name: user.name, role: user.role, avatar_url: user.avatar_url ?? null });
   });
 
   app.post("/api/auth/register", async (req, res) => {
@@ -1909,7 +1909,7 @@ async function startServer() {
       { expiresIn: "1d" }
     );
     res.cookie("token", token, getCookieOptions());
-    res.json({ id: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role });
+    res.json({ id: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role, avatar_url: null });
   });
 
   app.post("/api/auth/logout", (_req, res) => {
@@ -1917,15 +1917,30 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.get("/api/auth/me", (req, res) => {
+  app.get("/api/auth/me", async (req, res) => {
     const token = req.cookies.token;
     if (!token) return res.status(401).json({ error: "Unauthorized" });
     try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      res.json(decoded);
+      const decoded: any = jwt.verify(token, JWT_SECRET);
+      const user = await queryOne<any>("SELECT id, email, name, role, avatar_url FROM users WHERE id = $1", [decoded.id]);
+      if (!user) return res.status(401).json({ error: "User not found" });
+      res.json({ id: user.id, email: user.email, name: user.name, role: user.role, avatar_url: user.avatar_url ?? null });
     } catch {
       res.status(401).json({ error: "Invalid token" });
     }
+  });
+
+  app.post("/api/auth/avatar", authenticate, async (req: any, res) => {
+    const { avatar_url } = req.body;
+    if (!avatar_url || typeof avatar_url !== "string") {
+      return res.status(400).json({ error: "avatar_url is required" });
+    }
+    // Limit to ~2MB base64 string
+    if (avatar_url.length > 2_800_000) {
+      return res.status(413).json({ error: "Image too large. Please use an image under 2MB." });
+    }
+    await execute("UPDATE users SET avatar_url = $1 WHERE id = $2", [avatar_url, req.user.id]);
+    res.json({ success: true, avatar_url });
   });
 
   app.post("/api/ai/extract-pdf-text", authenticate, async (req: any, res: any) => {

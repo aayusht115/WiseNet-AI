@@ -20,7 +20,9 @@ import {
   RotateCcw,
   CheckCheck,
   BookMarked,
-  ClipboardCheck
+  ClipboardCheck,
+  Pencil,
+  X
 } from 'lucide-react';
 import { NavigationTab, UserRole, User } from '../types';
 
@@ -42,6 +44,7 @@ interface LayoutProps {
   role: UserRole;
   user: User;
   onLogout: () => void;
+  onUserUpdate?: (updated: User) => void;
   onSelectCourse?: (courseId: number) => void;
   /** When true the padded breadcrumb wrapper is bypassed — used for full-screen pages like LearnMode */
   noPadding?: boolean;
@@ -83,10 +86,14 @@ const SidebarItem: React.FC<{
   </button>
 );
 
-const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout, onSelectCourse, noPadding = false }) => {
+const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role, user, onLogout, onUserUpdate, onSelectCourse, noPadding = false }) => {
   const TIME_OVERRIDE_KEY = "wisenet_time_override";
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [avatarError, setAvatarError] = useState('');
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const [showCoursesMenu, setShowCoursesMenu] = useState(false);
   const [enrolledCourses, setEnrolledCourses] = useState<{ id: number; name: string; code: string }[]>([]);
   const [coursesLoading, setCoursesLoading] = useState(false);
@@ -189,6 +196,40 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
     setTimeInputValue("");
     window.dispatchEvent(new CustomEvent("wisenet-time-override-updated"));
     setIsTimeDialogOpen(false);
+  };
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      setAvatarError('Image must be under 2MB.');
+      return;
+    }
+    setAvatarError('');
+    setAvatarUploading(true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result as string;
+      try {
+        const res = await fetch('/api/auth/avatar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ avatar_url: dataUrl }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          setAvatarError(err.error || 'Upload failed.');
+        } else {
+          onUserUpdate?.({ ...user, avatar_url: dataUrl });
+        }
+      } catch {
+        setAvatarError('Upload failed. Please try again.');
+      } finally {
+        setAvatarUploading(false);
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const toggleCoursesMenu = () => {
@@ -394,7 +435,11 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
               onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
             >
               <div className="w-8 h-8 bg-slate-200 rounded-full flex items-center justify-center overflow-hidden">
-                <UserCircle className="text-slate-400" size={32} />
+                {user.avatar_url ? (
+                  <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
+                ) : (
+                  <UserCircle className="text-slate-400" size={32} />
+                )}
               </div>
               <span className="text-sm font-medium text-slate-700 hidden sm:block group-hover:text-moodle-blue">
                 {user.name}
@@ -403,17 +448,87 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
 
             {isUserMenuOpen && (
               <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-50 border border-slate-200">
-                <button className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100">Profile</button>
-                <button className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100">Grades</button>
-                <button className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100">Messages</button>
-                <button className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100">Preferences</button>
+                <button
+                  onClick={() => { setIsProfileOpen(true); setIsUserMenuOpen(false); }}
+                  className="block w-full text-left px-4 py-2 text-sm text-slate-700 hover:bg-slate-100"
+                >
+                  Profile
+                </button>
                 <div className="border-t border-slate-100 my-1"></div>
-                <button 
+                <button
                   onClick={onLogout}
                   className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50"
                 >
                   Log out
                 </button>
+              </div>
+            )}
+
+            {/* Profile modal */}
+            {isProfileOpen && (
+              <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setIsProfileOpen(false)}>
+                <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-5" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-bold text-slate-800">Profile</h3>
+                    <button onClick={() => setIsProfileOpen(false)} className="text-slate-400 hover:text-slate-600">
+                      <X size={20} />
+                    </button>
+                  </div>
+
+                  {/* Avatar */}
+                  <div className="flex flex-col items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => avatarInputRef.current?.click()}
+                      className="relative w-20 h-20 rounded-full overflow-hidden group focus:outline-none"
+                      disabled={avatarUploading}
+                    >
+                      {user.avatar_url ? (
+                        <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-slate-200 flex items-center justify-center">
+                          <UserCircle className="text-slate-400" size={80} />
+                        </div>
+                      )}
+                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Pencil size={16} className="text-white" />
+                      </div>
+                    </button>
+                    <input
+                      ref={avatarInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleAvatarChange}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => avatarInputRef.current?.click()}
+                      disabled={avatarUploading}
+                      className="flex items-center gap-1.5 text-xs font-semibold text-moodle-blue hover:underline disabled:opacity-50"
+                    >
+                      <Pencil size={12} />
+                      {avatarUploading ? 'Uploading…' : 'Edit profile picture'}
+                    </button>
+                    {avatarError && <p className="text-xs text-red-500">{avatarError}</p>}
+                  </div>
+
+                  {/* Info */}
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Name</p>
+                      <p className="text-sm font-semibold text-slate-800">{user.name}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Email</p>
+                      <p className="text-sm text-slate-700">{user.email}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">Role</p>
+                      <p className="text-sm text-slate-700 capitalize">{user.role}</p>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>

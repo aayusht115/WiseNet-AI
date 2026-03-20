@@ -217,6 +217,7 @@ const App: React.FC = () => {
       role={user.role}
       user={user}
       onLogout={handleLogout}
+      onUserUpdate={setUser}
       noPadding={isFullPage}
       onSelectCourse={(id) => {
         setSelectedCourseId(id);

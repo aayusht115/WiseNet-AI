@@ -175,6 +175,7 @@ export interface User {
   email: string;
   name: string;
   role: UserRole;
+  avatar_url?: string | null;
 }
 
 export interface Activity {

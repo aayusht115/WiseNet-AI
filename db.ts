@@ -308,6 +308,7 @@ async function ensureSchema() {
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications (user_id, is_read, created_at DESC);
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT;
   `);
 }
 
