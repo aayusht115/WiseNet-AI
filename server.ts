@@ -937,7 +937,7 @@ async function generateQuizWithQwen(
   if (!token) throw new Error("HF_TOKEN not configured");
 
   const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
-  const hfUrl = `https://api-inference.huggingface.co/models/${model}/v1/chat/completions`;
+  const hfUrl = "https://router.huggingface.co/v1/chat/completions";
   const docContext = buildSummaryInputContext(cleanOCRText(content), 4000);
 
   const systemMsg = `You are a quiz writer creating multiple-choice questions for an academic reading titled "${title}".
@@ -1299,7 +1299,7 @@ async function summarizeWithAI(
   if (!token) throw new Error("HF_TOKEN not configured");
 
   const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
-  const hfUrl = `https://api-inference.huggingface.co/models/${model}/v1/chat/completions`;
+  const hfUrl = "https://router.huggingface.co/v1/chat/completions";
   const cleaned = stripLeadingBoilerplate(content);
 
   const sampleSize = detailLevel === "Brief" ? 2800 : detailLevel === "Detailed" ? 5000 : 3800;
@@ -3386,7 +3386,7 @@ async function startServer() {
 
       const hfToken = process.env.HF_TOKEN;
       const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
-      const hfUrl = `https://api-inference.huggingface.co/models/${model}/v1/chat/completions`;
+      const hfUrl = "https://router.huggingface.co/v1/chat/completions";
 
       const numberedAnswers = answers.map((a, i) => `${i + 1}. ${a}`).join("\n");
       const systemPrompt = `You are an academic feedback analyst helping a professor understand student feedback.
@@ -4371,7 +4371,7 @@ ${exhibitContext ? `${exhibitContext}\n\n` : ""}INSTRUCTIONS — follow these ex
     }
 
     const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
-    const hfUrl = `https://api-inference.huggingface.co/models/${model}/v1/chat/completions`;
+    const hfUrl = "https://router.huggingface.co/v1/chat/completions";
 
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -4475,7 +4475,7 @@ ${exhibitContext ? `${exhibitContext}\n\n` : ""}INSTRUCTIONS — follow these ex
     if (!hfToken) return res.status(503).json({ error: "HF_TOKEN not configured" });
 
     const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
-    const hfUrl = `https://api-inference.huggingface.co/models/${model}/v1/chat/completions`;
+    const hfUrl = "https://router.huggingface.co/v1/chat/completions";
 
     const systemMsg = `You are a quiz writer creating multiple-choice questions for an academic reading titled "${material.title}".
 
