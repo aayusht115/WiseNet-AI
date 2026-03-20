@@ -601,18 +601,16 @@ async function extractPdfTextWithPython(sourceFileBase64: string): Promise<strin
   const data = await pdfParse(buffer);
   const extractedText = String(data.text || "");
   const normalizedExtracted = normalizeExtractedPdfText(extractedText);
-  const shouldRunVisionOcr =
-    !isLikelyReadableExtractedText(normalizedExtracted) || countVisualReferences(normalizedExtracted) >= 2;
+  // Only run Vision OCR if pdf-parse failed to extract readable text.
+  // Referencing tables/figures in body text is not a reason to OCR an otherwise readable PDF.
+  const shouldRunVisionOcr = !isLikelyReadableExtractedText(normalizedExtracted);
 
   if (!shouldRunVisionOcr) {
     return extractedText;
   }
 
   try {
-    const visionText = await extractPdfTextWithVisionOCR(
-      sourceFileBase64,
-      countVisualReferences(normalizedExtracted) >= 2 ? 18 : 10
-    );
+    const visionText = await extractPdfTextWithVisionOCR(sourceFileBase64, 10);
     return mergePdfExtractions(extractedText, visionText);
   } catch (error) {
     console.warn("Vision OCR PDF extraction failed; using text extraction only.", error);
@@ -1491,65 +1489,23 @@ async function ensureCourseScaffold(
   );
 }
 
-async function ensureFeedbackFormForCourse(courseId: number) {
-  const course = await queryOne<{ credits: number }>("SELECT credits FROM courses WHERE id = $1", [courseId]);
-  const maxSessions = sessionsRequiredForCredits(Number(course?.credits || 1));
-  const details = await queryOne<{ feedback_trigger_session: number }>(
-    "SELECT feedback_trigger_session FROM course_details WHERE course_id = $1",
-    [courseId]
-  );
-  const triggerSessionNumber = normalizeFeedbackTriggerSession(
-    details?.feedback_trigger_session,
-    maxSessions
-  );
-
-  const triggerSession = await queryOne<any>(
-    `
-      SELECT session_number, session_date
-      FROM course_sessions
-      WHERE course_id = $1 AND session_number = $2
-      LIMIT 1
-    `,
-    [courseId, triggerSessionNumber]
-  );
-  if (!triggerSession) return null;
-
+async function upsertFeedbackForm(courseId: number, sessionNumber: number, sessionDate: string, formType: 'early_course' | 'end_course') {
   let form = await queryOne<any>(
-    `
-      SELECT id, course_id, trigger_session_number, open_at, due_at
-      FROM feedback_forms
-      WHERE course_id = $1 AND trigger_session_number = $2
-      LIMIT 1
-    `,
-    [courseId, triggerSessionNumber]
+    `SELECT id FROM feedback_forms WHERE course_id = $1 AND trigger_session_number = $2`,
+    [courseId, sessionNumber]
   );
 
   if (!form) {
     form = await queryOne<any>(
-      `
-        INSERT INTO feedback_forms (course_id, trigger_session_number, open_at, due_at)
-        VALUES ($1, $2, ($3::date)::timestamptz, (($3::date)::timestamptz + INTERVAL '2 day'))
-        RETURNING id, course_id, trigger_session_number, open_at, due_at
-      `,
-      [courseId, triggerSessionNumber, triggerSession.session_date]
+      `INSERT INTO feedback_forms (course_id, trigger_session_number, form_type, open_at, due_at)
+       VALUES ($1, $2, $3, ($4::date)::timestamptz, (($4::date)::timestamptz + INTERVAL '2 day'))
+       RETURNING id`,
+      [courseId, sessionNumber, formType, sessionDate]
     );
   } else {
     await execute(
-      `
-        UPDATE feedback_forms
-        SET open_at = ($2::date)::timestamptz,
-            due_at = (($2::date)::timestamptz + INTERVAL '2 day')
-        WHERE id = $1
-      `,
-      [form.id, triggerSession.session_date]
-    );
-    form = await queryOne<any>(
-      `
-        SELECT id, course_id, trigger_session_number, open_at, due_at
-        FROM feedback_forms
-        WHERE id = $1
-      `,
-      [form.id]
+      `UPDATE feedback_forms SET form_type = $3, open_at = ($2::date)::timestamptz, due_at = (($2::date)::timestamptz + INTERVAL '2 day') WHERE id = $1`,
+      [form.id, sessionDate, formType]
     );
   }
 
@@ -1559,12 +1515,7 @@ async function ensureFeedbackFormForCourse(courseId: number) {
       [form.id]
     );
     const existingQuestions = await query<any>(
-      `
-        SELECT question_order, question_text, question_type, options
-        FROM feedback_questions
-        WHERE form_id = $1
-        ORDER BY question_order ASC
-      `,
+      `SELECT question_order, question_text, question_type, options FROM feedback_questions WHERE form_id = $1 ORDER BY question_order ASC`,
       [form.id]
     );
     const hasExistingSubmissions = (submissions?.count ?? 0) > 0;
@@ -1583,23 +1534,43 @@ async function ensureFeedbackFormForCourse(courseId: number) {
       await execute("DELETE FROM feedback_questions WHERE form_id = $1", [form.id]);
       for (const question of DEFAULT_FEEDBACK_QUESTIONS) {
         await execute(
-          `
-            INSERT INTO feedback_questions (form_id, question_order, question_text, question_type, options, required)
-            VALUES ($1, $2, $3, $4, $5::jsonb, TRUE)
-          `,
-          [
-            form.id,
-            question.question_order,
-            question.question_text,
-            question.question_type,
-            JSON.stringify(question.options || []),
-          ]
+          `INSERT INTO feedback_questions (form_id, question_order, question_text, question_type, options, required) VALUES ($1, $2, $3, $4, $5::jsonb, TRUE)`,
+          [form.id, question.question_order, question.question_text, question.question_type, JSON.stringify(question.options || [])]
         );
       }
     }
   }
 
   return form;
+}
+
+async function ensureFeedbackFormForCourse(courseId: number) {
+  const course = await queryOne<{ credits: number }>("SELECT credits FROM courses WHERE id = $1", [courseId]);
+  const maxSessions = sessionsRequiredForCredits(Number(course?.credits || 1));
+  const details = await queryOne<{ feedback_trigger_session: number }>(
+    "SELECT feedback_trigger_session FROM course_details WHERE course_id = $1",
+    [courseId]
+  );
+  const midTriggerNumber = normalizeFeedbackTriggerSession(details?.feedback_trigger_session, maxSessions);
+
+  // Mid-course feedback — at the configured trigger session
+  const midSession = await queryOne<any>(
+    `SELECT session_number, session_date FROM course_sessions WHERE course_id = $1 AND session_number = $2 LIMIT 1`,
+    [courseId, midTriggerNumber]
+  );
+  const midForm = midSession ? await upsertFeedbackForm(courseId, midTriggerNumber, midSession.session_date, 'early_course') : null;
+
+  // End-course feedback — at the last session of the course
+  const lastSession = await queryOne<any>(
+    `SELECT session_number, session_date FROM course_sessions WHERE course_id = $1 ORDER BY session_number DESC LIMIT 1`,
+    [courseId]
+  );
+  // Only create end-course form if last session is different from mid-course session
+  const endForm = lastSession && lastSession.session_number !== midTriggerNumber
+    ? await upsertFeedbackForm(courseId, lastSession.session_number, lastSession.session_date, 'end_course')
+    : null;
+
+  return { midForm, endForm };
 }
 
 function escapeRegex(value: string) {
@@ -1880,6 +1851,9 @@ async function startServer() {
         UNIQUE (session_id, student_id)
       )
     `).catch(() => {});
+    await execute(`ALTER TABLE feedback_forms ADD COLUMN IF NOT EXISTS form_type TEXT NOT NULL DEFAULT 'early_course'`).catch(() => {});
+    // Fix stale form_type values from before the early_course/end_course rename
+    await execute(`UPDATE feedback_forms SET form_type = 'early_course' WHERE form_type NOT IN ('early_course', 'end_course')`).catch(() => {});
   } catch (dbError) {
     console.warn("⚠️  Database unavailable — server starting in degraded mode (DB features will return 503):", (dbError as Error).message);
   }
@@ -2162,7 +2136,7 @@ async function startServer() {
           SELECT
             'feedback'::text AS task_type,
             f.id AS item_id,
-            'Anonymous Mid-course Feedback'::text AS item_title,
+            CASE WHEN f.form_type = 'end_course' THEN 'Anonymous End Course Feedback' ELSE 'Anonymous Early Course Feedback' END AS item_title,
             c.id AS course_id,
             c.name AS course_name,
             c.code AS course_code,
@@ -2936,17 +2910,21 @@ async function startServer() {
 
     await ensureFeedbackFormForCourse(courseId);
     const nowOverride = getNowOverride(req);
+    // Return the earliest-due active form not yet submitted by this student
     const form = await queryOne<any>(
       `
-        SELECT id, due_at
-        FROM feedback_forms
-        WHERE course_id = $1
-          AND COALESCE($2::timestamptz, NOW()) >= open_at
-          AND COALESCE($2::timestamptz, NOW()) <= due_at
-        ORDER BY due_at DESC
+        SELECT f.id, f.due_at, f.form_type
+        FROM feedback_forms f
+        WHERE f.course_id = $1
+          AND COALESCE($2::timestamptz, NOW()) >= f.open_at
+          AND COALESCE($2::timestamptz, NOW()) <= f.due_at
+          AND NOT EXISTS (
+            SELECT 1 FROM feedback_submissions fs WHERE fs.form_id = f.id AND fs.user_id = $3
+          )
+        ORDER BY f.due_at ASC
         LIMIT 1
       `,
-      [courseId, nowOverride]
+      [courseId, nowOverride, req.user.id]
     );
 
     if (!form) return res.json(null);
@@ -2968,6 +2946,7 @@ async function startServer() {
     res.json({
       form_id: form.id,
       due_at: form.due_at,
+      form_type: form.form_type ?? 'early_course',
       already_submitted: Boolean(submitted),
       questions: questions.map((q) => ({
         id: q.id,
@@ -3088,7 +3067,7 @@ async function startServer() {
 
     const forms = await query<any>(
       `
-        SELECT id, trigger_session_number, open_at, due_at
+        SELECT id, form_type, trigger_session_number, open_at, due_at
         FROM feedback_forms
         WHERE course_id = $1
         ORDER BY trigger_session_number DESC
@@ -3193,6 +3172,7 @@ async function startServer() {
 
       responseForms.push({
         form_id: form.id,
+        form_type: form.form_type || 'early_course',
         trigger_session_number: form.trigger_session_number,
         open_at: form.open_at,
         due_at: form.due_at,
@@ -3353,7 +3333,7 @@ async function startServer() {
     try {
       // Get all text questions for this course's feedback forms
       const questions = await query<any>(
-        `SELECT fq.id, fq.question_order, fq.question_text
+        `SELECT fq.id, fq.question_order, fq.question_text, ff.form_type
          FROM feedback_questions fq
          JOIN feedback_forms ff ON ff.id = fq.form_id
          WHERE ff.course_id = $1 AND fq.question_type = 'text'
@@ -3366,7 +3346,7 @@ async function startServer() {
       const result = [];
       for (const q of questions) {
         const rows = await query<any>(
-          `SELECT u.name AS student_name, a.answer_text
+          `SELECT u.name AS student_name, a.elem->>'answer_text' AS answer_text
            FROM (
              SELECT fs.user_id,
                     jsonb_array_elements(fs.answers) AS elem
@@ -3384,6 +3364,7 @@ async function startServer() {
           question_id: q.id,
           question_order: q.question_order,
           question_text: q.question_text,
+          form_type: q.form_type ?? 'early_course',
           responses: rows.map((r: any) => ({
             student_name: r.student_name,
             answer_text: String(r.answer_text || "").trim(),
@@ -3405,21 +3386,56 @@ async function startServer() {
       if (!questionText || answers.length === 0) {
         return res.status(400).json({ error: "questionText and answers[] are required" });
       }
-      // Build a combined document: question + numbered student answers
-      const combined =
-        `Question: ${questionText}\n\nStudent responses:\n` +
-        answers.map((a, i) => `${i + 1}. ${a}`).join("\n");
 
-      // Run through AI summariser (handles chunking internally if needed)
-      let summaryPayload: SummaryPayload;
-      try {
-        summaryPayload = await summarizeWithAI("Feedback Responses", combined, "Standard");
-      } catch {
-        summaryPayload = buildTFIDFSummaryPayload("Feedback Responses", combined, "Standard");
+      const hfToken = process.env.HF_TOKEN;
+      const model = process.env.HF_MODEL || "Qwen/Qwen2.5-7B-Instruct";
+      const hfUrl = "https://router.huggingface.co/v1/chat/completions";
+
+      const numberedAnswers = answers.map((a, i) => `${i + 1}. ${a}`).join("\n");
+      const systemPrompt = `You are an academic feedback analyst helping a professor understand student feedback.
+Analyse the student responses to the following question and produce:
+1. A concise 3-4 sentence summary of the overall sentiment and key themes.
+2. Up to 5 actionable key takeaways the professor can use to improve the course.
+
+Respond ONLY with valid JSON in this exact format (no markdown, no preamble):
+{"summary":"...","keyTakeaways":["...","..."]}`;
+
+      const userMsg = `Question: ${questionText}\n\nStudent responses:\n${numberedAnswers}`;
+
+      if (!hfToken) {
+        return res.status(500).json({ error: "HF_TOKEN not configured" });
       }
+
+      const hfRes = await fetch(hfUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${hfToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMsg },
+          ],
+          max_tokens: 600,
+          temperature: 0.3,
+        }),
+      });
+
+      if (!hfRes.ok) {
+        const errText = await hfRes.text();
+        throw new Error(`HuggingFace API error ${hfRes.status}: ${errText.slice(0, 300)}`);
+      }
+
+      const hfData = (await hfRes.json()) as any;
+      const raw = String(hfData?.choices?.[0]?.message?.content || "").trim();
+
+      // Parse JSON from model output (strip any markdown fences)
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("Model did not return valid JSON");
+      const parsed = JSON.parse(jsonMatch[0]);
+
       res.json({
-        summary: summaryPayload.summary,
-        keyTakeaways: summaryPayload.keyTakeaways.slice(0, 5),
+        summary: String(parsed.summary || ""),
+        keyTakeaways: Array.isArray(parsed.keyTakeaways) ? parsed.keyTakeaways.map(String).slice(0, 5) : [],
       });
     } catch (error: any) {
       res.status(500).json({ error: error.message || "Failed to generate feedback summary" });
@@ -3649,6 +3665,11 @@ async function startServer() {
     }
     if (source_type === "pdf" && !normalizedPdfBase64 && !source_url) {
       return res.status(400).json({ error: "Upload a PDF file or provide a PDF URL" });
+    }
+    // Enforce 15 MB limit on PDF uploads (base64 is ~4/3 of binary size)
+    const PDF_MAX_BASE64_LEN = 15 * 1024 * 1024 * (4 / 3);
+    if (normalizedPdfBase64 && normalizedPdfBase64.length > PDF_MAX_BASE64_LEN) {
+      return res.status(413).json({ error: "PDF file too large. Maximum allowed size is 15 MB." });
     }
 
     const section = await queryOne(
@@ -4131,6 +4152,33 @@ async function startServer() {
       [materialId, req.user.id, score, questions.length]
     );
 
+    // Update overall course progress for this enrollment (% of assigned materials with quiz completed)
+    await execute(
+      `
+        UPDATE enrollments e
+        SET progress = (
+          SELECT COALESCE(
+            ROUND(
+              100.0
+              * COUNT(DISTINCT p.material_id)
+              / NULLIF(COUNT(DISTINCT m.id), 0)
+            ),
+            0
+          )
+          FROM course_materials m
+          LEFT JOIN material_learning_progress p
+            ON p.material_id = m.id
+           AND p.user_id = $2
+           AND p.quiz_completed_at IS NOT NULL
+          WHERE m.course_id = (SELECT course_id FROM course_materials WHERE id = $1)
+            AND m.is_assigned = TRUE
+        )
+        WHERE e.user_id = $2
+          AND e.course_id = (SELECT course_id FROM course_materials WHERE id = $1)
+      `,
+      [materialId, req.user.id]
+    );
+
     // Notify the student of their quiz score
     try {
       const matTitle = await queryOne<{ title: string; course_id: number }>(
@@ -4604,6 +4652,7 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
         highest_score: 0,
         highest_percentage: 0,
         top_performer: null,
+        question_struggles: [],
       });
     }
 
@@ -4641,6 +4690,70 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
     const topStudent = [...studentAggregate.entries()]
       .sort((a, b) => b[1].avgPercent - a[1].avgPercent)[0];
 
+    // Per-question struggle analysis: which questions do students get wrong most often?
+    const questionStruggles = await query<any>(
+      `
+        SELECT
+          q.id AS question_id,
+          q.question_order,
+          q.question_text,
+          m.title AS material_title,
+          m.id AS material_id,
+          COUNT(a.id) AS total_attempts,
+          SUM(CASE
+            WHEN jsonb_array_element_text(a.answers, q.question_order - 1)::int != q.correct_answer
+            THEN 1 ELSE 0
+          END) AS wrong_count
+        FROM material_quiz_questions q
+        JOIN course_materials m ON m.id = q.material_id
+        JOIN material_quiz_attempts a ON a.material_id = q.material_id
+        WHERE m.course_id = $1
+        GROUP BY q.id, m.id
+        HAVING COUNT(a.id) > 0
+        ORDER BY wrong_count DESC, q.material_id, q.question_order
+        LIMIT 10
+      `,
+      [courseId]
+    );
+
+    // Per-material breakdown
+    const materialRows = await query<any>(
+      `SELECT m.id AS material_id, m.title,
+              COUNT(DISTINCT a.user_id) AS student_attempts,
+              COALESCE(ROUND(AVG(
+                CASE WHEN a.total_questions > 0 THEN a.score::float / a.total_questions * 100 ELSE NULL END
+              )::numeric, 1), 0) AS avg_pct
+       FROM course_materials m
+       LEFT JOIN material_quiz_attempts a ON a.material_id = m.id
+       WHERE m.course_id = $1
+         AND EXISTS (SELECT 1 FROM material_quiz_questions q WHERE q.material_id = m.id)
+       GROUP BY m.id
+       ORDER BY m.id`,
+      [courseId]
+    );
+
+    // Attach per-question struggles to each material
+    const perMaterial = materialRows.map((mat: any) => {
+      const qs = questionStruggles
+        .filter((q: any) => Number(q.material_id) === Number(mat.material_id))
+        .map((q: any) => ({
+          question_id: q.question_id,
+          question_order: Number(q.question_order),
+          question_text: q.question_text,
+          total_attempts: Number(q.total_attempts),
+          wrong_count: Number(q.wrong_count),
+          wrong_pct: q.total_attempts > 0 ? Math.round((Number(q.wrong_count) / Number(q.total_attempts)) * 100) : 0,
+        }))
+        .sort((a: any, b: any) => a.question_order - b.question_order);
+      return {
+        material_id: Number(mat.material_id),
+        title: mat.title,
+        student_attempts: Number(mat.student_attempts),
+        avg_pct: Number(mat.avg_pct) || 0,
+        questions: qs,
+      };
+    });
+
     res.json({
       attempts: attempts.length,
       average_score: averageScore,
@@ -4655,6 +4768,17 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
             average_percentage: topStudent[1].avgPercent,
           }
         : null,
+      question_struggles: questionStruggles.map((q) => ({
+        question_id: q.question_id,
+        question_order: Number(q.question_order),
+        question_text: q.question_text,
+        material_title: q.material_title,
+        material_id: Number(q.material_id),
+        total_attempts: Number(q.total_attempts),
+        wrong_count: Number(q.wrong_count),
+        wrong_pct: q.total_attempts > 0 ? Math.round((Number(q.wrong_count) / Number(q.total_attempts)) * 100) : 0,
+      })),
+      per_material: perMaterial,
     });
   });
 
@@ -4811,7 +4935,9 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
                   COALESCE(cs.session_status, 'scheduled') AS session_status,
                   TO_CHAR(cs.original_date, 'YYYY-MM-DD') AS original_date,
                   c.name AS course_name, c.code AS course_code,
-                  u.name AS faculty_name
+                  u.name AS faculty_name,
+                  TO_CHAR(c.start_date, 'YYYY-MM-DD') AS course_start_date,
+                  TO_CHAR(c.end_date, 'YYYY-MM-DD') AS course_end_date
            FROM course_sessions cs
            JOIN courses c ON c.id = cs.course_id
            JOIN users u ON u.id = c.created_by
@@ -5008,7 +5134,7 @@ Return ONLY a JSON array of exactly ${count} objects, each with this exact shape
 
       const sessions = await query<any>(
         `SELECT cs.id AS session_id, cs.session_number, cs.title AS session_title,
-                cs.session_date, cs.session_status,
+                TO_CHAR(cs.session_date, 'YYYY-MM-DD') AS session_date, cs.session_status,
                 COUNT(sa.id) AS marked_count,
                 SUM(CASE WHEN sa.status = 'present' THEN 1 ELSE 0 END)::int AS present_count,
                 SUM(CASE WHEN sa.status = 'absent'  THEN 1 ELSE 0 END)::int AS absent_count,

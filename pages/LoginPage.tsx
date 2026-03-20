@@ -8,9 +8,9 @@ interface LoginPageProps {
 const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
 
-  // Login state
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  // Login state — pre-filled for demo
+  const [email, setEmail] = useState('pgp25.aayush@spjimr.org');
+  const [password, setPassword] = useState('password123');
 
   // Register state
   const [regName, setRegName] = useState('');
@@ -37,7 +37,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      if (!response.ok) throw new Error('Invalid credentials');
+      if (!response.ok) throw new Error('Invalid credentials. Please check your email and password.');
       const user = await response.json();
       onLogin(user);
     } catch (err: any) {
@@ -46,6 +46,13 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
       setLoading(false);
     }
   };
+
+  const passwordMismatch = regConfirm.length > 0 && regPassword !== regConfirm;
+  const canRegister =
+    regName.trim().length > 0 &&
+    regEmail.trim().length > 0 &&
+    regPassword.length >= 6 &&
+    regPassword === regConfirm;
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,7 +73,10 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         body: JSON.stringify({ name: regName, email: regEmail, password: regPassword, role: regRole }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Registration failed');
+      if (!response.ok) {
+        if (response.status === 409) throw new Error('An account with this email already exists. Try logging in.');
+        throw new Error(data.error || 'Registration failed. Please try again.');
+      }
       onLogin(data);
     } catch (err: any) {
       setError(err.message);
@@ -76,149 +86,182 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-cover bg-center relative" style={{ backgroundImage: 'url("/SPJIMR_Mumbai_Campus.jpg")' }}>
-      <div className="absolute inset-0 bg-black/20"></div>
+    <div
+      className="min-h-screen flex items-center justify-center bg-cover bg-center relative"
+      style={{ backgroundImage: 'url("/SPJIMR_Mumbai_Campus.jpg")' }}
+    >
+      <div className="absolute inset-0 bg-black/30" />
 
-      <div className="relative z-10 w-full max-w-md bg-white rounded-lg shadow-2xl overflow-hidden flex flex-col p-8 m-4">
-        <div className="flex items-center space-x-3 mb-6">
-          <div className="w-12 h-12 bg-moodle-blue rounded flex items-center justify-center text-white">
-            <GraduationCap size={32} />
+      <div className="relative z-10 w-full max-w-sm bg-white rounded-2xl shadow-2xl p-8 m-4">
+        {/* Logo */}
+        <div className="flex items-center gap-3 mb-8">
+          <div className="w-11 h-11 bg-moodle-blue rounded-lg flex items-center justify-center text-white shrink-0">
+            <GraduationCap size={28} />
           </div>
-          <h1 className="text-4xl font-bold text-slate-800 tracking-tight">W<span className="text-moodle-blue">I</span>SENET</h1>
+          <h1 className="text-3xl font-bold text-slate-800 tracking-tight">
+            W<span className="text-moodle-blue">I</span>SENET
+          </h1>
         </div>
 
-        {/* Tab toggle */}
-        <div className="flex mb-6 border border-slate-200 rounded-lg overflow-hidden">
-          <button
-            type="button"
-            onClick={() => switchMode('login')}
-            className={`flex-1 py-2 text-sm font-medium transition-colors ${mode === 'login' ? 'bg-moodle-blue text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-          >
-            Log In
-          </button>
-          <button
-            type="button"
-            onClick={() => switchMode('register')}
-            className={`flex-1 py-2 text-sm font-medium transition-colors ${mode === 'register' ? 'bg-moodle-blue text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-          >
-            Register
-          </button>
-        </div>
+        {/* Title */}
+        <h2 className="text-lg font-semibold text-slate-700 mb-1">
+          {mode === 'login' ? 'Sign in to your account' : 'Create a new account'}
+        </h2>
+        <p className="text-sm text-slate-400 mb-6">
+          {mode === 'login' ? 'Enter your credentials to continue.' : 'Fill in the details below to get started.'}
+        </p>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-100 text-red-600 rounded text-sm">
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
             {error}
           </div>
         )}
 
-        {mode === 'login' ? (
+        {/* ── LOGIN FORM ── */}
+        {mode === 'login' && (
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="relative">
+              <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input
                 type="email"
                 placeholder="Email address"
-                className="w-full moodle-input pl-10 py-3"
+                className="w-full moodle-input pl-9 py-2.5 text-sm"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
               />
-              <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
             </div>
 
             <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input
                 type="password"
                 placeholder="Password"
-                className="w-full moodle-input pl-10 py-3"
+                className="w-full moodle-input pl-9 py-2.5 text-sm"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
               />
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
             </div>
 
-            <button type="submit" disabled={loading} className="w-full moodle-btn-primary py-3 text-lg disabled:opacity-60">
-              {loading ? 'Logging in…' : 'Log in'}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full moodle-btn-primary py-2.5 text-sm font-semibold disabled:opacity-60"
+            >
+              {loading ? 'Signing in…' : 'Sign in'}
             </button>
+
+            {/* Links below sign in */}
+            <div className="flex items-center justify-between pt-1 text-xs text-slate-500">
+              <button
+                type="button"
+                onClick={() => switchMode('register')}
+                className="hover:text-moodle-blue font-medium transition-colors"
+              >
+                New here? Register
+              </button>
+              <button
+                type="button"
+                className="hover:text-moodle-blue font-medium transition-colors"
+                onClick={() => setError('Please contact your administrator to reset your password.')}
+              >
+                Forgot password?
+              </button>
+            </div>
           </form>
-        ) : (
+        )}
+
+        {/* ── REGISTER FORM ── */}
+        {mode === 'register' && (
           <form onSubmit={handleRegister} className="space-y-4">
             <div className="relative">
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input
                 type="text"
                 placeholder="Full name"
-                className="w-full moodle-input pl-10 py-3"
+                className="w-full moodle-input pl-9 py-2.5 text-sm"
                 value={regName}
                 onChange={(e) => setRegName(e.target.value)}
                 required
               />
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
             </div>
 
             <div className="relative">
+              <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input
                 type="email"
                 placeholder="Email address"
-                className="w-full moodle-input pl-10 py-3"
+                className="w-full moodle-input pl-9 py-2.5 text-sm"
                 value={regEmail}
                 onChange={(e) => setRegEmail(e.target.value)}
                 required
               />
-              <UserCircle className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
             </div>
 
             <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input
                 type="password"
                 placeholder="Password"
-                className="w-full moodle-input pl-10 py-3"
+                className="w-full moodle-input pl-9 py-2.5 text-sm"
                 value={regPassword}
                 onChange={(e) => setRegPassword(e.target.value)}
                 required
               />
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
             </div>
 
             <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
               <input
                 type="password"
                 placeholder="Confirm password"
-                className="w-full moodle-input pl-10 py-3"
+                className={`w-full moodle-input pl-9 py-2.5 text-sm ${passwordMismatch ? 'border-red-400 focus:ring-red-300' : ''}`}
                 value={regConfirm}
                 onChange={(e) => setRegConfirm(e.target.value)}
                 required
               />
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+              {passwordMismatch && (
+                <p className="mt-1 text-xs text-red-500">Passwords do not match</p>
+              )}
             </div>
 
-            <div className="flex gap-3">
+            <div className="flex gap-2">
               <button
                 type="button"
                 onClick={() => setRegRole('student')}
-                className={`flex-1 py-2 rounded border text-sm font-medium transition-colors ${regRole === 'student' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                className={`flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors ${regRole === 'student' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
               >
                 Student
               </button>
               <button
                 type="button"
                 onClick={() => setRegRole('faculty')}
-                className={`flex-1 py-2 rounded border text-sm font-medium transition-colors ${regRole === 'faculty' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                className={`flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors ${regRole === 'faculty' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
               >
                 Faculty
               </button>
             </div>
 
-            <button type="submit" disabled={loading} className="w-full moodle-btn-primary py-3 text-lg disabled:opacity-60">
+            <button
+              type="submit"
+              disabled={loading || !canRegister}
+              className="w-full moodle-btn-primary py-2.5 text-sm font-semibold disabled:opacity-60"
+            >
               {loading ? 'Creating account…' : 'Create account'}
             </button>
+
+            <div className="text-center pt-1">
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="text-xs text-slate-500 hover:text-moodle-blue font-medium transition-colors"
+              >
+                Already have an account? Sign in
+              </button>
+            </div>
           </form>
         )}
-      </div>
-
-      <div className="absolute bottom-8 right-8">
-        <button className="w-10 h-10 bg-white/80 rounded-full flex items-center justify-center text-slate-600 shadow-lg hover:bg-white">
-          <span className="text-xl font-bold">?</span>
-        </button>
       </div>
     </div>
   );

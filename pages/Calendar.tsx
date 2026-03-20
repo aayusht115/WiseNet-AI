@@ -24,11 +24,13 @@ interface CalendarSession {
   course_name: string;
   course_code: string;
   faculty_name?: string;
-  session_status?: "scheduled" | "completed" | "cancelled" | "rescheduled";
+  session_status?: "scheduled" | "completed" | "rescheduled";
   original_date?: string;
   attendance_status?: "present" | "absent" | "late" | "excused" | "not_marked" | "scheduled";
   attendance_note?: string;
   attendance_marked_at?: string;
+  course_start_date?: string;
+  course_end_date?: string;
 }
 
 interface PendingSession {
@@ -213,12 +215,6 @@ function getFacultyStatusMeta(session: CalendarSession, courseClassName: string)
         label: "Completed",
         shell: "border-emerald-400 bg-emerald-50 text-emerald-900",
         badge: "bg-emerald-100 text-emerald-800",
-      };
-    case "cancelled":
-      return {
-        label: "Cancelled",
-        shell: "border-rose-400 bg-rose-50 text-rose-900",
-        badge: "bg-rose-100 text-rose-800",
       };
     case "rescheduled":
       return {
@@ -422,7 +418,7 @@ const Calendar: React.FC<CalendarProps> = ({ role }) => {
     setWeekStart(startOfWeek(now));
   };
 
-  const handleStatusUpdate = async (sessionId: number, status: "completed" | "cancelled") => {
+  const handleStatusUpdate = async (sessionId: number, status: "completed") => {
     setActionLoading(sessionId);
     setActionNotice(null);
     try {
@@ -448,6 +444,25 @@ const Calendar: React.FC<CalendarProps> = ({ role }) => {
 
   const handleReschedule = async () => {
     if (!rescheduleSession || !rescheduleDate || rescheduleLoading) return;
+
+    // Validate time order
+    if (rescheduleStart && rescheduleEnd && rescheduleStart >= rescheduleEnd) {
+      setActionNotice({ id: rescheduleSession.id, msg: "Start time must be before end time." });
+      return;
+    }
+
+    // Validate date is within course bounds
+    const courseStart = rescheduleSession.course_start_date;
+    const courseEnd = rescheduleSession.course_end_date;
+    if (courseStart && rescheduleDate < courseStart) {
+      setActionNotice({ id: rescheduleSession.id, msg: `Date must be on or after the course start date (${courseStart}).` });
+      return;
+    }
+    if (courseEnd && rescheduleDate > courseEnd) {
+      setActionNotice({ id: rescheduleSession.id, msg: `Date must be on or before the course end date (${courseEnd}).` });
+      return;
+    }
+
     setRescheduleLoading(true);
     try {
       const response = await fetch(`/api/sessions/${rescheduleSession.id}/reschedule`, {
@@ -519,7 +534,6 @@ const Calendar: React.FC<CalendarProps> = ({ role }) => {
           {isFaculty ? (
             <>
               <span className="px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 font-semibold">Completed</span>
-              <span className="px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 font-semibold">Cancelled</span>
               <span className="px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 font-semibold">Rescheduled</span>
             </>
           ) : (
@@ -586,9 +600,16 @@ const Calendar: React.FC<CalendarProps> = ({ role }) => {
                 <input
                   type="date"
                   value={rescheduleDate}
+                  min={rescheduleSession.course_start_date}
+                  max={rescheduleSession.course_end_date}
                   onChange={(event) => setRescheduleDate(event.target.value)}
                   className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
                 />
+                {rescheduleSession.course_start_date && rescheduleSession.course_end_date && (
+                  <span className="text-[10px] text-slate-400 font-normal normal-case">
+                    Course runs {rescheduleSession.course_start_date} → {rescheduleSession.course_end_date}
+                  </span>
+                )}
               </label>
               <div className="grid grid-cols-2 gap-3">
                 <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block">
@@ -606,10 +627,13 @@ const Calendar: React.FC<CalendarProps> = ({ role }) => {
                     type="time"
                     value={rescheduleEnd}
                     onChange={(event) => setRescheduleEnd(event.target.value)}
-                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                    className={`mt-1 w-full border rounded-lg px-3 py-2 text-sm ${rescheduleStart && rescheduleEnd && rescheduleStart >= rescheduleEnd ? 'border-red-400' : 'border-slate-300'}`}
                   />
                 </label>
               </div>
+              {rescheduleStart && rescheduleEnd && rescheduleStart >= rescheduleEnd && (
+                <p className="text-xs text-red-500">End time must be after start time</p>
+              )}
             </div>
             <div className="flex gap-2 mt-5">
               <button
@@ -822,7 +846,7 @@ const Calendar: React.FC<CalendarProps> = ({ role }) => {
                   ) : null}
                 </div>
 
-                {isFaculty && selectedSession.session_status !== "completed" && selectedSession.session_status !== "cancelled" ? (
+                {isFaculty && selectedSession.session_status !== "completed" ? (
                   <div className="space-y-2">
                     {actionNotice?.id === selectedSession.id ? (
                       <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">

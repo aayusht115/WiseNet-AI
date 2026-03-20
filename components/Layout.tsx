@@ -8,7 +8,6 @@ import {
   Bell,
   UserCircle,
   Zap,
-  Settings,
   PieChart,
   Users,
   Menu,
@@ -276,13 +275,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                 onTabChange(role === "student" ? NavigationTab.DASHBOARD : NavigationTab.FACULTY_SETUP)
               }
             />
-            {role === "faculty" && (
-              <NavItem
-                label="Dashboard"
-                active={activeTab === NavigationTab.FACULTY_ANALYTICS}
-                onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
-              />
-            )}
             <NavItem
               label="My courses"
               active={
@@ -559,12 +551,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                   onClick={() => onTabChange(NavigationTab.FACULTY_SETUP)}
                 />
                 <SidebarItem 
-                  icon={<LayoutDashboard size={18} />} 
-                  label="Dashboard" 
-                  active={activeTab === NavigationTab.FACULTY_ANALYTICS}
-                  onClick={() => onTabChange(NavigationTab.FACULTY_ANALYTICS)}
-                />
-                <SidebarItem 
                   icon={<BookOpen size={18} />} 
                   label="My courses" 
                   active={activeTab === NavigationTab.FACULTY_SETUP || activeTab === NavigationTab.COURSE_MANAGEMENT}
@@ -575,12 +561,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, role,
                   label="Calendar"
                   active={activeTab === NavigationTab.CALENDAR}
                   onClick={() => onTabChange(NavigationTab.CALENDAR)}
-                />
-                <SidebarItem 
-                  icon={<Settings size={18} />} 
-                  label="Site administration" 
-                  active={false}
-                  onClick={() => {}}
                 />
               </>
             )}

@@ -153,11 +153,14 @@ CREATE TABLE IF NOT EXISTS feedback_forms (
   id SERIAL PRIMARY KEY,
   course_id INTEGER REFERENCES courses(id),
   trigger_session_number INTEGER NOT NULL,
+  form_type TEXT NOT NULL DEFAULT 'early_course',
   open_at TIMESTAMPTZ NOT NULL,
   due_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (course_id, trigger_session_number)
 );
+
+ALTER TABLE feedback_forms ADD COLUMN IF NOT EXISTS form_type TEXT NOT NULL DEFAULT 'early_course';
 
 CREATE TABLE IF NOT EXISTS feedback_questions (
   id SERIAL PRIMARY KEY,

@@ -17,11 +17,11 @@ import {
 interface CourseManagementProps {
   courseId: number;
   role: UserRole;
-  initialTab?: "course" | "feedback";
+  initialTab?: "course" | "feedback" | "analytics";
   onBack: () => void;
 }
 
-type CourseManagementTab = "course" | "materials" | "participants" | "analytics" | "attendance" | "feedback";
+type CourseManagementTab = "course" | "materials" | "participants" | "analytics" | "attendance" | "feedback" | "sessions";
 
 type QuizQuestion = { id: number; order: number; question: string; options: string[] };
 
@@ -118,13 +118,36 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
     question_id: number;
     question_order: number;
     question_text: string;
+    form_type: 'early_course' | 'end_course';
     responses: { student_name: string; answer_text: string }[];
   };
   type QuestionSummary = { loading: boolean; summary: string | null; keyTakeaways: string[] };
   const [textFeedbackData, setTextFeedbackData] = useState<TextResponseQuestion[]>([]);
   const [textFeedbackLoading, setTextFeedbackLoading] = useState(false);
-  const [feedbackSummaries, setFeedbackSummaries] = useState<Record<number, QuestionSummary>>({});
-  const [expandedResponses, setExpandedResponses] = useState<Record<number, boolean>>({});
+  const [feedbackSummaries, setFeedbackSummaries] = useState<Record<string | number, QuestionSummary>>({});
+  const [expandedResponses, setExpandedResponses] = useState<Record<string | number, boolean>>({});
+  const [selectedMaterialId, setSelectedMaterialId] = useState<number | null>(null);
+
+  // Feedback analytics (faculty) — MCQ averages + submission counts
+  type FeedbackFormAnalytics = {
+    form_id: number;
+    form_type?: string;
+    trigger_session_number: number;
+    open_at: string;
+    due_at: string;
+    submissions: number;
+    metrics: {
+      question_id: number;
+      question_text: string;
+      question_type: 'mcq' | 'text';
+      options?: string[];
+      average?: number;
+      responses?: number;
+      comments?: { student_name?: string; answer_text: string }[];
+    }[];
+  };
+  const [feedbackAnalytics, setFeedbackAnalytics] = useState<FeedbackFormAnalytics[]>([]);
+  const [feedbackAnalyticsLoading, setFeedbackAnalyticsLoading] = useState(false);
 
   // Attendance state (faculty)
   type AttendanceSummaryRow = {
@@ -309,8 +332,9 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
   }, [courseId, role]);
 
   useEffect(() => {
-    const nextTab: CourseManagementTab =
-      role === "student" && initialTab === "feedback" ? "feedback" : "course";
+    let nextTab: CourseManagementTab = "course";
+    if (role === "student" && initialTab === "feedback") nextTab = "feedback";
+    if (role === "faculty" && (initialTab === "analytics" || initialTab as string === "feedback")) nextTab = initialTab as CourseManagementTab;
     setActiveTab(nextTab);
   }, [courseId, initialTab, role]);
 
@@ -404,16 +428,26 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
     }
   };
 
-  // Lazy-load text feedback responses when faculty opens Analytics tab
+  // Lazy-load feedback data (analytics + text responses) when faculty opens Feedback tab
   useEffect(() => {
-    if (role !== "faculty" || activeTab !== "analytics" || textFeedbackData.length > 0 || textFeedbackLoading) return;
-    setTextFeedbackLoading(true);
-    fetch(`/api/courses/${courseId}/feedback/text-responses`)
-      .then(r => r.ok ? r.json() : [])
-      .then((data: TextResponseQuestion[]) => setTextFeedbackData(data))
-      .catch(() => {})
-      .finally(() => setTextFeedbackLoading(false));
-  }, [activeTab, role, courseId, textFeedbackData.length, textFeedbackLoading]);
+    if (role !== "faculty" || activeTab !== "feedback") return;
+    if (feedbackAnalytics.length === 0 && !feedbackAnalyticsLoading) {
+      setFeedbackAnalyticsLoading(true);
+      fetch(`/api/courses/${courseId}/feedback/analytics`, { credentials: "include" })
+        .then(r => r.ok ? r.json() : { forms: [] })
+        .then((data: { forms: FeedbackFormAnalytics[] }) => setFeedbackAnalytics(data.forms || []))
+        .catch(() => {})
+        .finally(() => setFeedbackAnalyticsLoading(false));
+    }
+    if (textFeedbackData.length === 0 && !textFeedbackLoading) {
+      setTextFeedbackLoading(true);
+      fetch(`/api/courses/${courseId}/feedback/text-responses`, { credentials: "include" })
+        .then(r => r.ok ? r.json() : [])
+        .then((data: TextResponseQuestion[]) => setTextFeedbackData(data))
+        .catch(() => {})
+        .finally(() => setTextFeedbackLoading(false));
+    }
+  }, [activeTab, role, courseId]);
 
   const generateFeedbackSummary = async (q: TextResponseQuestion) => {
     setFeedbackSummaries(prev => ({ ...prev, [q.question_id]: { loading: true, summary: null, keyTakeaways: [] } }));
@@ -432,6 +466,34 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
       setFeedbackSummaries(prev => ({
         ...prev,
         [q.question_id]: { loading: false, summary: "Failed to generate summary. Please try again.", keyTakeaways: [] },
+      }));
+    }
+  };
+
+  // Generate a single combined summary across ALL open-ended questions for a form
+  const generateCombinedFormSummary = async (formId: number, questions: TextResponseQuestion[]) => {
+    const key = `form_${formId}`;
+    setFeedbackSummaries(prev => ({ ...prev, [key]: { loading: true, summary: null, keyTakeaways: [] } }));
+    try {
+      // Combine all responses with their question context
+      const allAnswers = questions.flatMap(q =>
+        q.responses.map(r => `[${q.question_text}] ${r.answer_text}`)
+      );
+      const combinedQuestion = questions.map(q => q.question_text).join(' / ');
+      const r = await fetch("/api/ai/feedback-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ questionText: combinedQuestion, answers: allAnswers }),
+      });
+      const data = await r.json();
+      setFeedbackSummaries(prev => ({
+        ...prev,
+        [key]: { loading: false, summary: data.summary || null, keyTakeaways: data.keyTakeaways || [] },
+      }));
+    } catch {
+      setFeedbackSummaries(prev => ({
+        ...prev,
+        [key]: { loading: false, summary: "Failed to generate summary. Please try again.", keyTakeaways: [] },
       }));
     }
   };
@@ -551,8 +613,15 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
     }
   };
 
+  const PDF_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
+
   const handlePdfSelected = async (file: File | null) => {
     if (!file) return;
+
+    if (file.size > PDF_MAX_BYTES) {
+      setPdfStatus(`File too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 15 MB.`);
+      return;
+    }
 
     setPdfStatus("");
     try {
@@ -656,6 +725,11 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
   };
 
   const handleRegenerateQuiz = async (materialId: number) => {
+    const confirmed = window.confirm(
+      "This will permanently overwrite the existing quiz for this material. Students who haven't taken it yet will see the new version. Continue?"
+    );
+    if (!confirmed) return;
+
     setRegeneratingMaterialId(materialId);
     try {
       await fetch(`/api/materials/${materialId}/quiz/regenerate`, {
@@ -1009,7 +1083,9 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
             <div className="flex items-start gap-3">
               <MessageSquareText size={20} className="text-amber-600 mt-0.5" />
               <div>
-                <h3 className="text-lg font-bold text-slate-800">Course Feedback</h3>
+                <h3 className="text-lg font-bold text-slate-800">
+                  {feedbackForm.form_type === 'end_course' ? 'End Course Feedback' : 'Early Course Feedback'}
+                </h3>
                 <p className="text-sm text-slate-600">
                   Please submit by {new Date(feedbackForm.due_at).toLocaleString()}.
                 </p>
@@ -1104,6 +1180,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
         {[
           { id: "course", label: "Course" },
           { id: "materials", label: "Reading Materials" },
+          { id: "sessions", label: "Sessions" },
           {
             id: "feedback",
             label:
@@ -1178,6 +1255,47 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
       )}
 
       {activeTab === "materials" && renderStudentMaterials()}
+      {activeTab === "sessions" && (
+        <div className="moodle-card p-6">
+          <h3 className="text-lg font-bold text-slate-800 mb-4">Session Schedule</h3>
+          {sessions.length === 0 ? (
+            <p className="text-sm text-slate-500 italic">No sessions scheduled yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm border border-slate-200">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="px-3 py-2 border text-left font-semibold text-slate-600">#</th>
+                    <th className="px-3 py-2 border text-left font-semibold text-slate-600">Title</th>
+                    <th className="px-3 py-2 border text-left font-semibold text-slate-600">Date</th>
+                    <th className="px-3 py-2 border text-left font-semibold text-slate-600">Time</th>
+                    <th className="px-3 py-2 border text-left font-semibold text-slate-600">Mode</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sessions.map((session) => (
+                    <tr key={session.id} className="hover:bg-slate-50">
+                      <td className="px-3 py-2 border font-semibold text-slate-500">S{session.session_number}</td>
+                      <td className="px-3 py-2 border text-slate-800">{session.title}</td>
+                      <td className="px-3 py-2 border text-slate-700">
+                        {session.session_date
+                          ? new Date(String(session.session_date).slice(0, 10) + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })
+                          : "—"}
+                      </td>
+                      <td className="px-3 py-2 border text-slate-700">
+                        {session.start_time && session.end_time
+                          ? `${session.start_time} – ${session.end_time}`
+                          : session.start_time || "—"}
+                      </td>
+                      <td className="px-3 py-2 border capitalize text-slate-700">{session.mode || "Classroom"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
       {activeTab === "feedback" && renderStudentFeedback()}
     </div>
   );
@@ -1190,6 +1308,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
           { id: "materials", label: "Reading Materials" },
           { id: "participants", label: "Participants" },
           ...(role === "faculty" ? [{ id: "analytics", label: "Analytics" }] : []),
+          ...(role === "faculty" ? [{ id: "feedback", label: "Feedback" }] : []),
           ...(role === "faculty" ? [{ id: "attendance", label: "Attendance" }] : []),
         ].map((tab) => (
           <button
@@ -1851,107 +1970,140 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
         </div>
       )}
 
-      {activeTab === "analytics" && (
-        <div className="space-y-4">
-          <div className="moodle-card p-6 space-y-6">
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">Quiz Analytics</h3>
-              <p className="text-sm text-slate-500 mt-1">Performance and attempt-level reporting for assigned quizzes.</p>
-            </div>
+      {activeTab === "analytics" && (() => {
+        const perMaterial: any[] = quizAnalytics?.per_material || [];
+        return (
+        <div className="space-y-6">
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-              <div className="moodle-card p-4">
-                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Attempts</p>
-                <p className="text-2xl font-black text-slate-800 mt-1">{quizAnalytics?.attempts || 0}</p>
+          {/* ── Quiz Overview ── */}
+          <div className="moodle-card p-6 space-y-5">
+            <h3 className="text-lg font-bold text-slate-800">Quiz Performance Overview</h3>
+            {(quizAnalytics?.attempts || 0) === 0 ? (
+              <p className="text-sm text-slate-400 italic">No quiz attempts yet.</p>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-slate-50 rounded-xl p-4 text-center">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Total Attempts</p>
+                  <p className="text-3xl font-black text-slate-800">{quizAnalytics?.attempts || 0}</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-4 text-center">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Class Average</p>
+                  <p className={`text-3xl font-black ${(quizAnalytics?.average_percentage || 0) >= 70 ? "text-emerald-600" : (quizAnalytics?.average_percentage || 0) >= 50 ? "text-amber-500" : "text-red-500"}`}>
+                    {quizAnalytics?.average_percentage || 0}%
+                  </p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-4 text-center">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Highest Score</p>
+                  <p className="text-3xl font-black text-emerald-600">{quizAnalytics?.highest_percentage || 0}%</p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-4 text-center">
+                  <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Top Performer</p>
+                  <p className="text-sm font-bold text-slate-800 mt-1 truncate">{quizAnalytics?.top_performer?.name || "—"}</p>
+                  <p className="text-xs text-slate-400">{quizAnalytics?.top_performer?.average_percentage || 0}% avg</p>
+                </div>
               </div>
-              <div className="moodle-card p-4">
-                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Average %</p>
-                <p className="text-2xl font-black text-moodle-blue mt-1">{quizAnalytics?.average_percentage || 0}%</p>
-              </div>
-              <div className="moodle-card p-4">
-                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Highest %</p>
-                <p className="text-2xl font-black text-emerald-600 mt-1">{quizAnalytics?.highest_percentage || 0}%</p>
-              </div>
-              <div className="moodle-card p-4">
-                <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Top Performer</p>
-                <p className="text-sm font-bold text-slate-800 mt-2">{quizAnalytics?.top_performer?.name || "--"}</p>
-                <p className="text-xs text-slate-500">{quizAnalytics?.top_performer?.average_percentage || 0}% avg</p>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <h4 className="text-sm font-bold text-slate-800 mb-3">Quiz Attempt Reports</h4>
-              {reports.length === 0 ? (
-                <p className="text-sm text-slate-500 italic">No quiz submissions yet.</p>
-              ) : (
-                <table className="min-w-full text-sm border border-slate-200">
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <th className="px-3 py-2 border">Student</th>
-                      <th className="px-3 py-2 border">Material</th>
-                      <th className="px-3 py-2 border">Section</th>
-                      <th className="px-3 py-2 border">Score</th>
-                      <th className="px-3 py-2 border">Submitted</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reports.map((r) => (
-                      <tr key={r.id}>
-                        <td className="px-3 py-2 border">
-                          {r.student_name}
-                          <div className="text-xs text-slate-500">{r.student_email}</div>
-                        </td>
-                        <td className="px-3 py-2 border">{r.material_title}</td>
-                        <td className="px-3 py-2 border">{r.section_title}</td>
-                        <td className="px-3 py-2 border font-bold text-moodle-blue">
-                          {r.score}/{r.total_questions}
-                        </td>
-                        <td className="px-3 py-2 border">
-                          {new Date(r.submitted_at).toLocaleString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            )}
           </div>
 
-          <div className="moodle-card p-6 space-y-6">
-            <div>
-              <h3 className="text-lg font-bold text-slate-800">Pre-read Analytics</h3>
-              <p className="text-sm text-slate-500 mt-1">Reading completion and quiz follow-through for assigned pre-reads.</p>
-            </div>
+          {/* ── Per Pre-read Breakdown ── */}
+          {perMaterial.length > 0 && (() => {
+            const activeMat = perMaterial.find((m: any) => m.material_id === selectedMaterialId) || perMaterial[0];
+            return (
+              <div className="moodle-card p-6 space-y-5">
+                <div className="flex items-center justify-between gap-4 flex-wrap">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-800">Pre-read Quiz Breakdown</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Question-level wrong-answer rate for the selected pre-read.</p>
+                  </div>
+                  {perMaterial.length > 1 && (
+                    <select
+                      value={selectedMaterialId ?? perMaterial[0].material_id}
+                      onChange={(e) => setSelectedMaterialId(Number(e.target.value))}
+                      className="border border-slate-300 rounded-lg px-3 py-2 text-sm font-medium text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-moodle-blue"
+                    >
+                      {perMaterial.map((m: any) => (
+                        <option key={m.material_id} value={m.material_id}>{m.title}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
 
+                {/* Summary stats for selected pre-read */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-slate-50 rounded-xl p-4 text-center">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Students Attempted</p>
+                    <p className="text-3xl font-black text-slate-800">{activeMat.student_attempts}</p>
+                  </div>
+                  <div className="bg-slate-50 rounded-xl p-4 text-center">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Avg Score</p>
+                    <p className={`text-3xl font-black ${activeMat.avg_pct >= 70 ? "text-emerald-600" : activeMat.avg_pct >= 50 ? "text-amber-500" : "text-red-500"}`}>
+                      {activeMat.avg_pct}%
+                    </p>
+                  </div>
+                </div>
+
+                {/* Question-by-question wrong answer rate */}
+                {activeMat.questions.length === 0 ? (
+                  <p className="text-sm text-slate-400 italic">No question-level data yet.</p>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-[10px] uppercase tracking-widest font-bold text-slate-400">Wrong answer rate per question</p>
+                    {activeMat.questions.map((q: any) => (
+                      <div key={q.question_id} className="space-y-1">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-2 flex-1 min-w-0">
+                            <span className={`text-[10px] font-black shrink-0 mt-0.5 ${q.wrong_pct >= 60 ? "text-red-600" : q.wrong_pct >= 35 ? "text-amber-600" : "text-slate-400"}`}>
+                              Q{q.question_order}
+                            </span>
+                            <p className="text-xs text-slate-700 leading-snug">{q.question_text}</p>
+                          </div>
+                          <span className={`text-sm font-black shrink-0 ${q.wrong_pct >= 60 ? "text-red-600" : q.wrong_pct >= 35 ? "text-amber-600" : "text-emerald-600"}`}>
+                            {q.wrong_pct}%
+                          </span>
+                        </div>
+                        <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden ml-5">
+                          <div
+                            className={`h-full rounded-full transition-all ${q.wrong_pct >= 60 ? "bg-red-500" : q.wrong_pct >= 35 ? "bg-amber-400" : "bg-emerald-400"}`}
+                            style={{ width: `${q.wrong_pct}%` }}
+                          />
+                        </div>
+                        <p className="text-[10px] text-slate-400 ml-5">{q.total_attempts} attempt{q.total_attempts !== 1 ? 's' : ''} · {q.wrong_count} wrong</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Pre-read Engagement ── */}
+          <div className="moodle-card p-6 space-y-5">
+            <h3 className="text-lg font-bold text-slate-800">Pre-read Engagement</h3>
             {preReadAnalyticsLoading ? (
               <div className="flex justify-center py-10">
                 <Loader2 size={28} className="animate-spin text-moodle-blue" />
               </div>
             ) : !preReadAnalytics ? (
-              <p className="text-sm text-slate-500 italic">No pre-read analytics available yet.</p>
+              <p className="text-sm text-slate-400 italic">No pre-read data yet.</p>
             ) : (
               <>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div className="moodle-card p-4">
-                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Total Enrolled</p>
-                    <p className="text-3xl font-black text-slate-800 mt-1">{preReadAnalytics.summary.total_students}</p>
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-slate-50 rounded-xl p-4 text-center">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Enrolled</p>
+                    <p className="text-3xl font-black text-slate-800">{preReadAnalytics.summary.total_students}</p>
                   </div>
-                  <div className="moodle-card p-4">
-                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Opened ≥ 1 Reading</p>
-                    <p className="text-3xl font-black text-moodle-blue mt-1">{preReadAnalytics.summary.opened_any}</p>
-                    <p className="text-xs text-slate-400 mt-1">
-                      {preReadAnalytics.summary.total_students > 0
-                        ? Math.round((preReadAnalytics.summary.opened_any / preReadAnalytics.summary.total_students) * 100)
-                        : 0}% of class
+                  <div className="bg-slate-50 rounded-xl p-4 text-center">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Opened a Reading</p>
+                    <p className="text-3xl font-black text-moodle-blue">{preReadAnalytics.summary.opened_any}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {preReadAnalytics.summary.total_students > 0 ? Math.round((preReadAnalytics.summary.opened_any / preReadAnalytics.summary.total_students) * 100) : 0}%
                     </p>
                   </div>
-                  <div className="moodle-card p-4">
-                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold">Completed ≥ 1 Quiz</p>
-                    <p className="text-3xl font-black text-emerald-600 mt-1">{preReadAnalytics.summary.completed_any_quiz}</p>
-                    <p className="text-xs text-slate-400 mt-1">
-                      {preReadAnalytics.summary.total_students > 0
-                        ? Math.round((preReadAnalytics.summary.completed_any_quiz / preReadAnalytics.summary.total_students) * 100)
-                        : 0}% of class
+                  <div className="bg-slate-50 rounded-xl p-4 text-center">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400 font-bold mb-1">Took a Quiz</p>
+                    <p className="text-3xl font-black text-emerald-600">{preReadAnalytics.summary.completed_any_quiz}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {preReadAnalytics.summary.total_students > 0 ? Math.round((preReadAnalytics.summary.completed_any_quiz / preReadAnalytics.summary.total_students) * 100) : 0}%
                     </p>
                   </div>
                 </div>
@@ -1960,13 +2112,13 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
                   const notStarted = preReadAnalytics.students.filter((s) => Number(s.opened_readings) === 0);
                   if (notStarted.length === 0) return null;
                   return (
-                    <div className="p-5 border border-amber-200 bg-amber-50/70 rounded-xl">
-                      <p className="text-sm font-bold text-amber-700 mb-3">
-                        {notStarted.length} student{notStarted.length > 1 ? "s" : ""} have not opened any assigned reading yet.
+                    <div className="p-4 border border-amber-200 bg-amber-50 rounded-xl">
+                      <p className="text-sm font-bold text-amber-700 mb-2">
+                        {notStarted.length} student{notStarted.length > 1 ? 's' : ''} haven't opened any reading yet
                       </p>
                       <div className="flex flex-wrap gap-2">
                         {notStarted.map((s) => (
-                          <span key={s.student_id} className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold px-2.5 py-1 rounded-full">
+                          <span key={s.student_id} className="bg-white border border-amber-200 text-amber-800 text-xs font-semibold px-2.5 py-1 rounded-full">
                             {s.student_name}
                           </span>
                         ))}
@@ -1976,16 +2128,15 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
                 })()}
 
                 <div className="overflow-x-auto">
-                  <h4 className="text-sm font-bold text-slate-800 mb-3">Student Completion Breakdown</h4>
                   <table className="min-w-full text-sm">
-                    <thead className="bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    <thead className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                       <tr>
                         <th className="px-4 py-3 text-left">Student</th>
                         <th className="px-4 py-3 text-center">Assigned</th>
                         <th className="px-4 py-3 text-center">Opened</th>
                         <th className="px-4 py-3 text-center">Read</th>
                         <th className="px-4 py-3 text-center">Quiz Done</th>
-                        <th className="px-4 py-3 text-center">Avg Quiz %</th>
+                        <th className="px-4 py-3 text-center">Avg %</th>
                         <th className="px-4 py-3 text-center">Status</th>
                       </tr>
                     </thead>
@@ -1994,11 +2145,8 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
                         const assigned = Number(s.assigned_readings);
                         const quizDone = Number(s.quiz_completed_readings);
                         const pct = assigned > 0 ? Math.round((quizDone / assigned) * 100) : 0;
-                        const statusColor =
-                          pct === 100 ? "text-emerald-600 bg-emerald-50" :
-                          pct >= 50 ? "text-amber-600 bg-amber-50" :
-                          "text-red-600 bg-red-50";
-                        const statusLabel = pct === 100 ? "Complete" : pct >= 50 ? "In Progress" : "Not Started";
+                        const statusColor = pct === 100 ? "text-emerald-600 bg-emerald-50" : pct >= 50 ? "text-amber-600 bg-amber-50" : "text-red-600 bg-red-50";
+                        const statusLabel = pct === 100 ? "Complete" : pct > 0 ? "In Progress" : "Not Started";
                         return (
                           <tr key={s.student_id} className="hover:bg-slate-50 transition-colors">
                             <td className="px-4 py-3">
@@ -2011,21 +2159,13 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
                             <td className="px-4 py-3 text-center font-bold text-moodle-blue">{s.quiz_completed_readings}</td>
                             <td className="px-4 py-3 text-center">
                               {s.avg_quiz_percent != null ? (
-                                <span className={`font-bold ${
-                                  Number(s.avg_quiz_percent) >= 70
-                                    ? "text-emerald-600"
-                                    : Number(s.avg_quiz_percent) >= 50
-                                      ? "text-amber-600"
-                                      : "text-red-500"
-                                }`}>
+                                <span className={`font-bold ${Number(s.avg_quiz_percent) >= 70 ? "text-emerald-600" : Number(s.avg_quiz_percent) >= 50 ? "text-amber-600" : "text-red-500"}`}>
                                   {Number(s.avg_quiz_percent).toFixed(0)}%
                                 </span>
                               ) : <span className="text-slate-400">—</span>}
                             </td>
                             <td className="px-4 py-3 text-center">
-                              <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${statusColor}`}>
-                                {statusLabel}
-                              </span>
+                              <span className={`text-[10px] font-bold uppercase px-2 py-1 rounded-full ${statusColor}`}>{statusLabel}</span>
                             </td>
                           </tr>
                         );
@@ -2037,111 +2177,192 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
             )}
           </div>
 
-          {role === "faculty" && (
-            <div className="moodle-card p-6 space-y-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-bold text-slate-800">Feedback Text Responses</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">AI-generated summaries of student open-ended feedback.</p>
-                </div>
-                {textFeedbackLoading && <Loader2 size={18} className="animate-spin text-slate-400" />}
-              </div>
+        </div>
+        );
+      })()}
 
-              {!textFeedbackLoading && textFeedbackData.length === 0 && (
-                <p className="text-sm text-slate-400 italic">No text-based feedback questions found for this course yet.</p>
-              )}
-
-              {textFeedbackData.map((q) => {
-                const qs = feedbackSummaries[q.question_id];
-                const showResponses = !!expandedResponses[q.question_id];
-                const setShowResponses = (val: boolean | ((prev: boolean) => boolean)) =>
-                  setExpandedResponses(prev => ({
-                    ...prev,
-                    [q.question_id]: typeof val === 'function' ? val(!!prev[q.question_id]) : val,
-                  }));
-                return (
-                  <div key={q.question_id} className="border border-slate-200 rounded-xl overflow-hidden">
-                    {/* Question header */}
-                    <div className="px-5 py-4 bg-slate-50 border-b border-slate-100">
-                      <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Question {q.question_order}</p>
-                      <p className="text-sm font-semibold text-slate-800">{q.question_text}</p>
-                      <p className="text-xs text-slate-500 mt-1">{q.responses.length} response{q.responses.length !== 1 ? 's' : ''}</p>
-                    </div>
-
-                    <div className="px-5 py-4 space-y-4">
-                      {/* AI Summary card */}
-                      {qs?.summary && (
-                        <div className="bg-blue-50 border border-blue-100 rounded-lg p-4 space-y-2">
-                          <div className="flex items-center gap-2 text-moodle-blue">
-                            <Sparkles size={14} />
-                            <span className="text-xs font-bold uppercase tracking-wider">AI Summary</span>
-                          </div>
-                          <p className="text-sm text-slate-700 leading-relaxed">{qs.summary}</p>
-                          {qs.keyTakeaways.length > 0 && (
-                            <div className="mt-2 space-y-1">
-                              {qs.keyTakeaways.map((kt, ki) => (
-                                <div key={ki} className="flex items-start gap-2 text-xs text-slate-600">
-                                  <span className="w-4 h-4 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-[9px] font-bold shrink-0 mt-0.5">{ki + 1}</span>
-                                  <span>{kt}</span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Generate summary button */}
-                      {q.responses.length > 0 && !qs?.summary && (
-                        <button
-                          onClick={() => generateFeedbackSummary(q)}
-                          disabled={qs?.loading}
-                          className="flex items-center gap-2 px-4 py-2 bg-moodle-blue text-white rounded-lg text-xs font-bold hover:bg-blue-700 disabled:opacity-50"
-                        >
-                          {qs?.loading ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-                          {qs?.loading ? "Generating Summary…" : "Summarise All Responses"}
-                        </button>
-                      )}
-
-                      {/* Regenerate if already done */}
-                      {qs?.summary && (
-                        <button
-                          onClick={() => generateFeedbackSummary(q)}
-                          disabled={qs?.loading}
-                          className="flex items-center gap-2 px-3 py-1.5 border border-slate-300 text-slate-600 rounded-lg text-xs font-semibold hover:border-moodle-blue hover:text-moodle-blue disabled:opacity-50"
-                        >
-                          {qs?.loading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                          Regenerate
-                        </button>
-                      )}
-
-                      {/* Individual responses toggle */}
-                      {q.responses.length > 0 && (
-                        <div>
-                          <button
-                            onClick={() => setShowResponses(s => !s)}
-                            className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 transition-colors"
-                          >
-                            {showResponses ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                            {showResponses ? "Hide" : "Show"} individual responses ({q.responses.length})
-                          </button>
-                          {showResponses && (
-                            <div className="mt-3 space-y-2 max-h-64 overflow-y-auto">
-                              {q.responses.map((r, ri) => (
-                                <div key={ri} className="bg-slate-50 border border-slate-100 rounded-lg px-4 py-3">
-                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{r.student_name}</p>
-                                  <p className="text-sm text-slate-700 leading-relaxed">{r.answer_text}</p>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+      {/* ── Feedback Tab (faculty only) ───────────────────────────────────── */}
+      {activeTab === "feedback" && (
+        <div className="space-y-6">
+          {/* Loading state */}
+          {(feedbackAnalyticsLoading || textFeedbackLoading) && (
+            <div className="flex items-center gap-2 text-slate-400 py-10 justify-center">
+              <Loader2 size={20} className="animate-spin" /> Loading feedback data…
             </div>
           )}
+
+          {/* No data state */}
+          {!feedbackAnalyticsLoading && !textFeedbackLoading && feedbackAnalytics.length === 0 && (
+            <div className="moodle-card p-8 text-center text-slate-400">
+              <MessageSquareText size={32} className="mx-auto mb-3 opacity-40" />
+              <p className="text-sm font-medium">No feedback forms have been triggered yet.</p>
+              <p className="text-xs mt-1">Feedback forms are auto-created when students hit the configured session milestone.</p>
+            </div>
+          )}
+
+          {/* One card per feedback form */}
+          {feedbackAnalytics.map((form) => {
+            const formLabel = form.form_type === 'end_course' ? 'End Course Feedback' : 'Early Course Feedback';
+            const textQsForForm = textFeedbackData.filter(q => q.form_type === (form.form_type as any) || (!form.form_type && q.form_type === 'early_course'));
+
+            return (
+              <div key={form.form_id} className="moodle-card overflow-hidden">
+                {/* Form header */}
+                <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between flex-wrap gap-3">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-moodle-blue">{formLabel}</p>
+                    <h3 className="text-base font-bold text-slate-800 mt-0.5">Session {form.trigger_session_number} Feedback</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Open: {new Date(form.open_at).toLocaleDateString()} · Due: {new Date(form.due_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-4 py-2">
+                    <Users size={14} className="text-slate-400" />
+                    <span className="text-xl font-black text-slate-800">{form.submissions}</span>
+                    <span className="text-xs text-slate-500 font-medium">submission{form.submissions !== 1 ? 's' : ''}</span>
+                  </div>
+                </div>
+
+                {form.submissions === 0 ? (
+                  <div className="px-6 py-8 text-center text-slate-400">
+                    <p className="text-sm">No responses yet. Check back after the due date.</p>
+                  </div>
+                ) : (
+                  <div className="p-6 space-y-6">
+                    {/* MCQ questions */}
+                    {form.metrics.filter(m => m.question_type === 'mcq').length > 0 && (
+                      <div className="space-y-4">
+                        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Rating Questions</h4>
+                        {form.metrics.filter(m => m.question_type === 'mcq').map((metric) => {
+                          const pct = metric.options?.length
+                            ? Math.round(((metric.average ?? 0) / metric.options.length) * 100)
+                            : 0;
+                          return (
+                            <div key={metric.question_id} className="space-y-2">
+                              <div className="flex items-start justify-between gap-4">
+                                <p className="text-sm font-medium text-slate-700 flex-1">{metric.question_text}</p>
+                                <div className="text-right shrink-0">
+                                  <span className="text-lg font-black text-slate-800">{(metric.average ?? 0).toFixed(1)}</span>
+                                  <span className="text-xs text-slate-400 ml-1">/ {metric.options?.length ?? 5}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all ${pct >= 70 ? 'bg-emerald-500' : pct >= 45 ? 'bg-amber-400' : 'bg-red-400'}`}
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                                <span className="text-xs text-slate-500 w-16 text-right">{metric.responses ?? 0} response{(metric.responses ?? 0) !== 1 ? 's' : ''}</span>
+                              </div>
+                              {metric.options && (
+                                <div className="flex justify-between text-[10px] text-slate-400 px-0.5">
+                                  <span>{metric.options[0]}</span>
+                                  <span>{metric.options[metric.options.length - 1]}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Text questions with single combined AI summary */}
+                    {textQsForForm.length > 0 && (() => {
+                      const combinedKey = `form_${form.form_id}`;
+                      const combinedSummary = feedbackSummaries[combinedKey];
+                      const hasAnyResponses = textQsForForm.some(q => q.responses.length > 0);
+                      return (
+                        <div className="space-y-4">
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Open-ended Questions</h4>
+
+                          {/* Single AI Summary box for all open-ended questions */}
+                          <div className="rounded-xl border-2 border-violet-200 overflow-hidden">
+                            <div className="flex items-center justify-between px-4 py-3 bg-violet-600">
+                              <div className="flex items-center gap-2 text-white">
+                                <Sparkles size={15} />
+                                <span className="text-sm font-bold">AI Summary</span>
+                                <span className="text-violet-200 text-xs font-normal">— across all open-ended responses</span>
+                              </div>
+                              {hasAnyResponses && (
+                                <button
+                                  onClick={() => generateCombinedFormSummary(form.form_id, textQsForForm)}
+                                  disabled={combinedSummary?.loading}
+                                  className="flex items-center gap-1.5 px-4 py-1.5 bg-white text-violet-700 rounded-lg text-xs font-bold hover:bg-violet-50 disabled:opacity-60 shrink-0"
+                                >
+                                  {combinedSummary?.loading ? <Loader2 size={11} className="animate-spin" /> : <Sparkles size={11} />}
+                                  {combinedSummary?.loading ? "Generating…" : combinedSummary?.summary ? "Regenerate" : "Summarise with AI"}
+                                </button>
+                              )}
+                            </div>
+                            <div className="px-5 py-4 bg-violet-50 min-h-[72px]">
+                              {combinedSummary?.loading ? (
+                                <div className="flex items-center gap-2 text-violet-400 py-2">
+                                  <Loader2 size={14} className="animate-spin" />
+                                  <span className="text-sm">Analysing all student responses…</span>
+                                </div>
+                              ) : combinedSummary?.summary ? (
+                                <div className="space-y-3">
+                                  <p className="text-sm text-slate-800 leading-relaxed">{combinedSummary.summary}</p>
+                                  {combinedSummary.keyTakeaways.length > 0 && (
+                                    <div className="space-y-1.5">
+                                      <p className="text-[10px] font-bold uppercase tracking-widest text-violet-500">Key Takeaways</p>
+                                      {combinedSummary.keyTakeaways.map((kt, ki) => (
+                                        <div key={ki} className="flex items-start gap-2 text-xs text-slate-700">
+                                          <span className="w-4 h-4 rounded-full bg-violet-100 text-violet-700 flex items-center justify-center text-[9px] font-bold shrink-0 mt-0.5">{ki + 1}</span>
+                                          <span>{kt}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <p className="text-sm text-violet-400 italic py-1">Click "Summarise with AI" to generate a combined summary of all open-ended responses.</p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Individual questions with their responses */}
+                          {textQsForForm.map((q) => {
+                            const showResponses = !!expandedResponses[q.question_id];
+                            return (
+                              <div key={q.question_id} className="border border-slate-200 rounded-xl overflow-hidden">
+                                <div className="px-5 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-3">
+                                  <div>
+                                    <p className="text-sm font-semibold text-slate-800">{q.question_text}</p>
+                                    <p className="text-xs text-slate-400 mt-0.5">{q.responses.length} response{q.responses.length !== 1 ? 's' : ''}</p>
+                                  </div>
+                                  {q.responses.length > 0 && (
+                                    <button
+                                      onClick={() => setExpandedResponses(prev => ({ ...prev, [q.question_id]: !prev[q.question_id] }))}
+                                      className="flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-800 shrink-0"
+                                    >
+                                      {showResponses ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                      {showResponses ? "Hide" : "Show"} responses
+                                    </button>
+                                  )}
+                                </div>
+                                {showResponses && (
+                                  <div className="px-5 py-3 space-y-2 max-h-64 overflow-y-auto">
+                                    {q.responses.map((r, ri) => (
+                                      <div key={ri} className="bg-slate-50 border border-slate-100 rounded-lg px-4 py-3">
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{r.student_name}</p>
+                                        <p className="text-sm text-slate-700 leading-relaxed">{r.answer_text}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

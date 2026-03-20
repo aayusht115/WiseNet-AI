@@ -1,6 +1,37 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Component } from 'react';
 import Layout from './components/Layout';
+
+// ── Error Boundary ───────────────────────────────────────────────────────────
+interface ErrorBoundaryState { hasError: boolean; message: string }
+class ErrorBoundary extends Component<{ children: React.ReactNode }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, message: '' };
+  static getDerivedStateFromError(err: any) {
+    return { hasError: true, message: err?.message ?? String(err) };
+  }
+  componentDidCatch(err: any, info: any) {
+    console.error('WiseNet caught render error:', err, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 p-8 text-center">
+          <div className="max-w-md">
+            <h1 className="text-2xl font-bold text-slate-800 mb-2">Something went wrong</h1>
+            <p className="text-slate-500 text-sm mb-6">{this.state.message}</p>
+            <button
+              onClick={() => { this.setState({ hasError: false, message: '' }); window.location.reload(); }}
+              className="px-6 py-2.5 bg-moodle-blue text-white rounded-lg font-semibold text-sm hover:bg-blue-700"
+            >
+              Reload page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 import Dashboard from './pages/Dashboard';
 import Planner from './pages/Planner';
 import Summarizer from './pages/Summarizer';
@@ -23,7 +54,7 @@ const App: React.FC = () => {
   const [activeSession, setActiveSession] = useState<PreReadSession | null>(null);
   const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
   const [highlightMaterialId, setHighlightMaterialId] = useState<number | undefined>(undefined);
-  const [courseInitialTab, setCourseInitialTab] = useState<'course' | 'feedback'>('course');
+  const [courseInitialTab, setCourseInitialTab] = useState<'course' | 'feedback' | 'analytics'>('course');
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -129,9 +160,9 @@ const App: React.FC = () => {
               setCourseInitialTab('course');
               setActiveTab(NavigationTab.COURSE_EDITOR);
             }} 
-            onSelectCourse={(id) => {
+            onSelectCourse={(id, tab) => {
               setSelectedCourseId(id);
-              setCourseInitialTab('course');
+              setCourseInitialTab(tab || 'course');
               setActiveTab(NavigationTab.COURSE_MANAGEMENT);
             }}
           />
@@ -198,4 +229,10 @@ const App: React.FC = () => {
   );
 };
 
-export default App;
+const AppWithBoundary: React.FC = () => (
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);
+
+export default AppWithBoundary;

@@ -59,10 +59,6 @@ const PreReadBooster: React.FC<PreReadBoosterProps> = ({ onStart, highlightMater
           <h2 className="text-2xl font-bold text-slate-800">Pre-read Booster</h2>
           <p className="text-slate-500 text-sm mt-1">Prime your brain for the next lecture with AI-accelerated summaries.</p>
         </div>
-        <div className="bg-blue-50 border border-blue-100 rounded px-4 py-2 flex items-center space-x-3">
-          <div className="w-2 h-2 bg-moodle-blue rounded-full animate-pulse"></div>
-          <span className="text-xs font-bold text-moodle-blue">Upcoming Session: Tomorrow at 10 AM</span>
-        </div>
       </div>
 
       <div className="space-y-6">

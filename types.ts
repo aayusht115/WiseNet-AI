@@ -79,6 +79,7 @@ export interface FeedbackQuestion {
 export interface ActiveFeedbackForm {
   form_id: number;
   due_at: string;
+  form_type: 'early_course' | 'end_course';
   already_submitted: boolean;
   questions: FeedbackQuestion[];
 }

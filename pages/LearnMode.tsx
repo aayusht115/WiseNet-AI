@@ -134,6 +134,8 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
   const [quizAnswers, setQuizAnswers] = useState<number[]>([]);
   const [quizScore, setQuizScore] = useState(0);
   const [quizLoading, setQuizLoading] = useState(false);
+  const [quizSubmitError, setQuizSubmitError] = useState<string | null>(null);
+  const [pendingSubmitAnswers, setPendingSubmitAnswers] = useState<number[] | null>(null);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -144,8 +146,8 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
   const chatInputRef = useRef<HTMLInputElement>(null);
 
   const currentItem = session.items[activeItemIndex];
-  // Canonical numeric material ID — session.id is the definitive source
-  const materialId = Number(session.id);
+  // Derive materialId from the current item's own ID so each material gets its own chat history
+  const materialId = Number(currentItem.id) || Number(session.id);
   const missedQuestionDetails = quizAnswers
     .map((answer, index) => {
       const question = quizQuestions[index];
@@ -171,12 +173,12 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
-  // Reset chat when switching material
+  // Reset chat only when the actual material changes (not just item-tab switches within same material)
   useEffect(() => {
     setChatHistoryLoaded(null);
     setChatMessages([]);
     setRightView('chat');
-  }, [activeItemIndex]);
+  }, [materialId]);
 
   // Load persisted chat history when chat panel mounts / becomes active
   useEffect(() => {
@@ -239,22 +241,40 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
     }
   };
 
+  const submitQuizAnswers = async (answers: number[]) => {
+    setQuizSubmitError(null);
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(`/api/materials/${materialId}/quiz/submit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers }),
+        });
+        if (res.ok) {
+          setPendingSubmitAnswers(null);
+          return;
+        }
+        lastErr = new Error(`Server error ${res.status}`);
+      } catch (err) {
+        lastErr = err;
+      }
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+    console.error('Failed to submit quiz after 3 attempts', lastErr);
+    setQuizSubmitError('Your score was recorded locally, but we could not save it to the server. Tap "Retry" to try again.');
+    setPendingSubmitAnswers(answers);
+  };
+
   const nextQuizQuestion = async () => {
     if (currentQuizIndex < quizQuestions.length - 1) {
       setCurrentQuizIndex((i) => i + 1);
       setSelectedOption(null);
     } else {
-      try {
-        await fetch(`/api/materials/${materialId}/quiz/submit`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ answers: [...quizAnswers] }),
-        });
-      } catch (err) {
-        console.error('Failed to submit quiz', err);
-      }
+      const answers = [...quizAnswers];
       // Stay inside LearnMode — show result inline, do NOT navigate away
       setRightView('quiz_result');
+      await submitQuizAnswers(answers);
     }
   };
 
@@ -719,6 +739,18 @@ const LearnMode: React.FC<LearnModeProps> = ({ session, onExit, onComplete }) =>
                       The quiz can only be attempted once.
                     </p>
                   </div>
+
+                  {quizSubmitError && (
+                    <div className="text-left bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">
+                      <p>{quizSubmitError}</p>
+                      <button
+                        onClick={() => pendingSubmitAnswers && submitQuizAnswers(pendingSubmitAnswers)}
+                        className="mt-2 px-3 py-1.5 bg-red-600 text-white rounded font-bold hover:bg-red-700"
+                      >
+                        Retry saving
+                      </button>
+                    </div>
+                  )}
 
                   <button
                     onClick={() => setRightView('chat')}
