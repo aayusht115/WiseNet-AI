@@ -600,7 +600,17 @@ async function extractPdfTextWithVisionOCR(sourceFileBase64: string, maxPages = 
 async function extractPdfTextWithPdfJs(sourceFileBase64: string): Promise<string> {
   const buffer = Buffer.from(sourceFileBase64, "base64");
   const uint8 = new Uint8Array(buffer);
-  const loadingTask = pdfjsLib.getDocument({ data: uint8, useSystemFonts: true });
+  // cMapUrl is required to decode Identity-H / CID fonts (e.g. Georgia-Bold via Adobe Identity).
+  // Without it pdfjs-dist produces the same garbled output as pdf-parse.
+  const cMapUrl = path.join(__dirname, "node_modules/pdfjs-dist/cmaps/");
+  const standardFontDataUrl = path.join(__dirname, "node_modules/pdfjs-dist/standard_fonts/");
+  const loadingTask = pdfjsLib.getDocument({
+    data: uint8,
+    useSystemFonts: true,
+    cMapUrl,
+    cMapPacked: true,
+    standardFontDataUrl,
+  });
   const pdf = await loadingTask.promise;
   const pageTexts: string[] = [];
   for (let i = 1; i <= pdf.numPages; i++) {
