@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 // @ts-ignore – import lib path directly to avoid pdf-parse's startup test-file load
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createServer as createViteServer } from "vite";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
@@ -596,19 +597,46 @@ async function extractPdfTextWithVisionOCR(sourceFileBase64: string, maxPages = 
   }
 }
 
+async function extractPdfTextWithPdfJs(sourceFileBase64: string): Promise<string> {
+  const buffer = Buffer.from(sourceFileBase64, "base64");
+  const uint8 = new Uint8Array(buffer);
+  const loadingTask = pdfjsLib.getDocument({ data: uint8, useSystemFonts: true });
+  const pdf = await loadingTask.promise;
+  const pageTexts: string[] = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item: any) => ("str" in item ? item.str : ""))
+      .join(" ");
+    if (pageText.trim()) pageTexts.push(pageText);
+  }
+  return pageTexts.join("\n\n");
+}
+
 async function extractPdfTextWithPython(sourceFileBase64: string): Promise<string> {
   const buffer = Buffer.from(sourceFileBase64, "base64");
   const data = await pdfParse(buffer);
   const extractedText = String(data.text || "");
   const normalizedExtracted = normalizeExtractedPdfText(extractedText);
-  // Only run Vision OCR if pdf-parse failed to extract readable text.
-  // Referencing tables/figures in body text is not a reason to OCR an otherwise readable PDF.
-  const shouldRunVisionOcr = !isLikelyReadableExtractedText(normalizedExtracted);
-
-  if (!shouldRunVisionOcr) {
+  // Only run fallback extraction if pdf-parse failed to produce readable text.
+  if (isLikelyReadableExtractedText(normalizedExtracted)) {
     return extractedText;
   }
 
+  // Fallback 1: pdfjs-dist — handles Identity-H / custom-encoded fonts better.
+  try {
+    const pdfJsText = await extractPdfTextWithPdfJs(sourceFileBase64);
+    const normalizedPdfJs = normalizeExtractedPdfText(pdfJsText);
+    if (isLikelyReadableExtractedText(normalizedPdfJs)) {
+      console.info("pdfjs-dist extraction succeeded where pdf-parse failed.");
+      return pdfJsText;
+    }
+  } catch (error) {
+    console.warn("pdfjs-dist extraction failed:", error);
+  }
+
+  // Fallback 2: macOS Vision OCR (only available locally).
   try {
     const visionText = await extractPdfTextWithVisionOCR(sourceFileBase64, 10);
     return mergePdfExtractions(extractedText, visionText);
