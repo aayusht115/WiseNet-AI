@@ -1306,7 +1306,7 @@ async function summarizeWithAI(
 
   const sampleSize = detailLevel === "Brief" ? 2800 : detailLevel === "Detailed" ? 5000 : 3800;
   const inputText = buildSummaryInputContext(cleaned, sampleSize, focusPrompt);
-  const maxTokens = detailLevel === "Brief" ? 350 : detailLevel === "Detailed" ? 800 : 550;
+  const maxTokens = detailLevel === "Brief" ? 500 : detailLevel === "Detailed" ? 1200 : 800;
   const numPoints = detailLevel === "Brief" ? 3 : detailLevel === "Detailed" ? 7 : 5;
   const focusNeedsSpecificVisual =
     focusPrompt.trim() && /\b(exhibits?|figures?|tables?|charts?)\s*[a-z0-9-]+/i.test(focusPrompt);
@@ -1348,6 +1348,8 @@ TAKEAWAYS:
         { role: "user", content: userMsg },
       ],
       max_tokens: maxTokens,
+      temperature: 0.2,
+      top_p: 0.9,
       stream: false,
     }),
   });
@@ -1911,6 +1913,29 @@ async function startServer() {
     );
     res.cookie("token", token, getCookieOptions());
     res.json({ id: user.id, email: user.email, name: user.name, role: user.role });
+  });
+
+  app.post("/api/auth/register", async (req, res) => {
+    const { name, email, password, role } = req.body;
+    if (!name || !email || !password || !["student", "faculty"].includes(role)) {
+      return res.status(400).json({ error: "Invalid registration data" });
+    }
+    const existing = await queryOne<any>("SELECT id FROM users WHERE email = $1", [email]);
+    if (existing) {
+      return res.status(409).json({ error: "An account with this email already exists" });
+    }
+    const hashed = bcrypt.hashSync(password, 10);
+    const newUser = await queryOne<any>(
+      "INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, $4) RETURNING id, email, name, role",
+      [name, email, hashed, role]
+    );
+    const token = jwt.sign(
+      { id: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role },
+      JWT_SECRET,
+      { expiresIn: "1d" }
+    );
+    res.cookie("token", token, getCookieOptions());
+    res.json({ id: newUser.id, email: newUser.email, name: newUser.name, role: newUser.role });
   });
 
   app.post("/api/auth/logout", (_req, res) => {
@@ -4314,7 +4339,7 @@ ${exhibitContext ? `${exhibitContext}\n\n` : ""}INSTRUCTIONS — follow these ex
       const hfRes = await fetch(hfUrl, {
         method: "POST",
         headers: { Authorization: `Bearer ${hfToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages, max_tokens: 512, stream: true }),
+        body: JSON.stringify({ model, messages, max_tokens: 1200, temperature: 0.2, top_p: 0.9, stream: true }),
       });
 
       if (!hfRes.ok || !hfRes.body) {
@@ -4354,7 +4379,7 @@ ${exhibitContext ? `${exhibitContext}\n\n` : ""}INSTRUCTIONS — follow these ex
         const fallRes = await fetch(hfUrl, {
           method: "POST",
           headers: { Authorization: `Bearer ${hfToken}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ model, messages, max_tokens: 512, stream: false }),
+          body: JSON.stringify({ model, messages, max_tokens: 1200, temperature: 0.2, top_p: 0.9, stream: false }),
         });
         const data = await fallRes.json() as any;
         fullReply = data?.choices?.[0]?.message?.content ?? "";
