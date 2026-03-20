@@ -119,7 +119,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
     question_order: number;
     question_text: string;
     form_type: 'early_course' | 'end_course';
-    responses: { answer_text: string }[];
+    responses: { student_name: string; answer_text: string }[];
   };
   type QuestionSummary = { loading: boolean; summary: string | null; keyTakeaways: string[] };
   const [textFeedbackData, setTextFeedbackData] = useState<TextResponseQuestion[]>([]);
@@ -143,7 +143,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
       options?: string[];
       average?: number;
       responses?: number;
-      comments?: { answer_text: string }[];
+      comments?: { student_name?: string; answer_text: string }[];
     }[];
   };
   const [feedbackAnalytics, setFeedbackAnalytics] = useState<FeedbackFormAnalytics[]>([]);
@@ -2346,7 +2346,7 @@ const CourseManagement: React.FC<CourseManagementProps> = ({ courseId, role, ini
                                   <div className="px-5 py-3 space-y-2 max-h-64 overflow-y-auto">
                                     {q.responses.map((r, ri) => (
                                       <div key={ri} className="bg-slate-50 border border-slate-100 rounded-lg px-4 py-3">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Anonymous</p>
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">{r.student_name}</p>
                                         <p className="text-sm text-slate-700 leading-relaxed">{r.answer_text}</p>
                                       </div>
                                     ))}
