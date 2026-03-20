@@ -59,12 +59,8 @@ function MarkdownContent({ content }: { content: string }) {
   while (i < lines.length) {
     const line = lines[i];
     // ── Headings ──
-    if (/^###\s/.test(line)) {
-      elements.push(<p key={i} className="font-bold text-slate-900 mt-2 mb-0.5 text-[13px]">{parseInline(line.replace(/^###\s/, ''))}</p>);
-    } else if (/^##\s/.test(line)) {
-      elements.push(<p key={i} className="font-bold text-slate-900 mt-2 mb-0.5 text-[13px]">{parseInline(line.replace(/^##\s/, ''))}</p>);
-    } else if (/^#\s/.test(line)) {
-      elements.push(<p key={i} className="font-bold text-slate-900 mt-2 mb-0.5 text-[13px]">{parseInline(line.replace(/^#\s/, ''))}</p>);
+    if (/^#{1,6}\s/.test(line)) {
+      elements.push(<p key={i} className="font-bold text-slate-900 mt-2 mb-0.5 text-[13px]">{parseInline(line.replace(/^#{1,6}\s/, ''))}</p>);
     }
     // ── Unordered list — bridge blank lines so 1,2,3 stay in one <ul> ──
     else if (isBullet(line)) {
@@ -82,20 +78,36 @@ function MarkdownContent({ content }: { content: string }) {
       elements.push(<ul key={`ul${i}`} className="list-disc pl-4 space-y-0.5 my-1 text-sm">{items}</ul>);
       continue;
     }
-    // ── Numbered list — bridge blank lines so 1,2,3 stay in one <ol> ──
+    // ── Numbered list — bridge blank lines and continuation lines ──
     else if (isNumbered(line)) {
+      const startNum = parseInt(line.match(/^(\d+)/)?.[1] || '1', 10);
       const items: React.ReactNode[] = [];
+      let liLines: string[] = [];
+      const flushLi = (key: number) => {
+        if (liLines.length) {
+          items.push(<li key={key} className="ml-1">{parseInline(liLines.join(' '))}</li>);
+          liLines = [];
+        }
+      };
       while (i < lines.length) {
         if (isNumbered(lines[i])) {
-          items.push(<li key={i} className="ml-1">{parseInline(lines[i].replace(/^\d+[.)]\s+/, ''))}</li>);
+          flushLi(i);
+          liLines = [lines[i].replace(/^\d+[.)]\s+/, '')];
           i++;
-        } else if (!lines[i].trim() && peekContinues(i + 1, isNumbered)) {
-          i++; // skip blank line, continue list
+        } else if (!lines[i].trim()) {
+          if (peekContinues(i + 1, isNumbered)) {
+            i++; // skip blank line between numbered items
+          } else {
+            break;
+          }
         } else {
-          break;
+          // continuation content — append to current list item
+          liLines.push(lines[i].trim());
+          i++;
         }
       }
-      elements.push(<ol key={`ol${i}`} className="list-decimal pl-4 space-y-1 my-1 text-sm">{items}</ol>);
+      flushLi(i);
+      elements.push(<ol key={`ol${i}`} start={startNum} className="list-decimal pl-4 space-y-1 my-1 text-sm">{items}</ol>);
       continue;
     }
     // ── Empty line — small gap ──
