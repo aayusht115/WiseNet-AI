@@ -230,14 +230,14 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
               <button
                 type="button"
                 onClick={() => setRegRole('student')}
-                className={`flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors ${regRole === 'student' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                className={`flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors ${regRole === 'student' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}
               >
                 Student
               </button>
               <button
                 type="button"
                 onClick={() => setRegRole('faculty')}
-                className={`flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors ${regRole === 'faculty' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                className={`flex-1 py-2 rounded-lg border text-xs font-semibold transition-colors ${regRole === 'faculty' ? 'bg-moodle-blue text-white border-moodle-blue' : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'}`}
               >
                 Faculty
               </button>
