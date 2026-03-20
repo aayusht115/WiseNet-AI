@@ -3342,19 +3342,17 @@ async function startServer() {
       );
       if (questions.length === 0) return res.json([]);
 
-      // For each question collect student responses with names
+      // For each question collect anonymous responses (no student names)
       const result = [];
       for (const q of questions) {
         const rows = await query<any>(
-          `SELECT u.name AS student_name, a.elem->>'answer_text' AS answer_text
+          `SELECT a.elem->>'answer_text' AS answer_text
            FROM (
-             SELECT fs.user_id,
-                    jsonb_array_elements(fs.answers) AS elem
+             SELECT jsonb_array_elements(fs.answers) AS elem
              FROM feedback_submissions fs
              JOIN feedback_questions fq2 ON fq2.id = $1
              WHERE fs.form_id = fq2.form_id
            ) a
-           JOIN users u ON u.id = a.user_id
            WHERE (a.elem->>'question_id')::int = $1
              AND a.elem->>'answer_text' IS NOT NULL
              AND trim(a.elem->>'answer_text') <> ''`,
@@ -3366,7 +3364,6 @@ async function startServer() {
           question_text: q.question_text,
           form_type: q.form_type ?? 'early_course',
           responses: rows.map((r: any) => ({
-            student_name: r.student_name,
             answer_text: String(r.answer_text || "").trim(),
           })).filter((r: any) => r.answer_text),
         });
