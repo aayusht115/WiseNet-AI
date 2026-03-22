@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { promisify } from "node:util";
 // @ts-ignore – import lib path directly to avoid pdf-parse's startup test-file load
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
@@ -600,10 +601,13 @@ async function extractPdfTextWithVisionOCR(sourceFileBase64: string, maxPages = 
 async function extractPdfTextWithPdfJs(sourceFileBase64: string): Promise<string> {
   const buffer = Buffer.from(sourceFileBase64, "base64");
   const uint8 = new Uint8Array(buffer);
-  // cMapUrl is required to decode Identity-H / CID fonts (e.g. Georgia-Bold via Adobe Identity).
-  // Without it pdfjs-dist produces the same garbled output as pdf-parse.
-  const cMapUrl = path.join(__dirname, "node_modules/pdfjs-dist/cmaps/");
-  const standardFontDataUrl = path.join(__dirname, "node_modules/pdfjs-dist/standard_fonts/");
+  // Resolve pdfjs-dist location via require() so it works whether __dirname is the project
+  // root or a compiled dist/ subdirectory (e.g. on Render).
+  const req = createRequire(import.meta.url);
+  const pdfjsDistRoot = path.dirname(req.resolve("pdfjs-dist/package.json"));
+  // cMapUrl MUST end with a path separator; pdfjs-dist uses it as a prefix for cmap filenames.
+  const cMapUrl = pdfjsDistRoot + path.sep + "cmaps" + path.sep;
+  const standardFontDataUrl = pdfjsDistRoot + path.sep + "standard_fonts" + path.sep;
   const loadingTask = pdfjsLib.getDocument({
     data: uint8,
     useSystemFonts: true,
